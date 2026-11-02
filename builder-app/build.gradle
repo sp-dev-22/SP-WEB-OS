@@ -1,0 +1,21 @@
+plugins {
+    id 'com.android.application'
+}
+
+android {
+    namespace 'com.sp.webos.builder'
+    compileSdk 34
+
+    defaultConfig {
+        applicationId 'com.sp.webos'
+        minSdk 26
+        targetSdk 34
+        versionCode 1
+        versionName '1.0'
+    }
+}
+
+dependencies {
+    // Google's APK signing library (same one apksigner uses) — runs on-device.
+    implementation 'com.android.tools.build:apksig:8.2.2'
+}
