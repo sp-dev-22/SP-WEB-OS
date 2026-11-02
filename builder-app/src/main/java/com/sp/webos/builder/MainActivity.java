@@ -7,6 +7,8 @@ import android.net.Uri;
 import android.os.Build;
 import android.os.Bundle;
 import android.provider.Settings;
+import android.text.Editable;
+import android.text.TextWatcher;
 import android.view.Gravity;
 import android.widget.Button;
 import android.widget.EditText;
@@ -24,7 +26,10 @@ import java.nio.charset.StandardCharsets;
 
 /**
  * SP WEB OS — single-file HTML ko phone par hi APK banane wala app.
- * Flow: HTML file chuno ya code paste karo -> "APK Banao" -> "Install Karo".
+ * Flow: HTML file chuno ya code paste karo -> app ka naam do (optional)
+ * -> "APK Banao" -> "Install Karo".
+ * Alag naam = alag package id = kai apps ek saath phone par reh sakte hain.
+ * Naam khaali chhodo to purana default "Web App" banta hai.
  */
 public class MainActivity extends Activity {
 
@@ -32,11 +37,15 @@ public class MainActivity extends Activity {
     private static final String INSTALL_ACTION = "com.sp.webos.INSTALL_RESULT";
 
     private TextView status;
+    private TextView packagePreview;
     private EditText codeBox;
+    private EditText nameBox;
     private Button installBtn;
     private byte[] pickedHtml;
     private String pickedName;
     private File builtApk;
+    private String builtLabel;
+    private String builtPackage;
 
     @Override
     protected void onCreate(Bundle savedInstanceState) {
@@ -76,6 +85,23 @@ public class MainActivity extends Activity {
         codeBox.setTextSize(13);
         root.addView(codeBox);
 
+        nameBox = new EditText(this);
+        nameBox.setHint("App ka naam (optional) — jaise: My Notes, Camera Test");
+        nameBox.setSingleLine(true);
+        root.addView(nameBox);
+
+        packagePreview = new TextView(this);
+        packagePreview.setTextSize(12);
+        root.addView(packagePreview);
+        updatePackagePreview();
+        nameBox.addTextChangedListener(new TextWatcher() {
+            @Override public void beforeTextChanged(CharSequence s, int a, int b, int c) { }
+            @Override public void onTextChanged(CharSequence s, int a, int b, int c) {
+                updatePackagePreview();
+            }
+            @Override public void afterTextChanged(Editable s) { }
+        });
+
         Button buildBtn = new Button(this);
         buildBtn.setText("🚀 APK Banao");
         buildBtn.setOnClickListener(v -> build());
@@ -95,6 +121,34 @@ public class MainActivity extends Activity {
         ScrollView scroll = new ScrollView(this);
         scroll.addView(root);
         setContentView(scroll);
+    }
+
+    /** App name -> unique package id. Latin letters/digits survive;
+     *  anything else falls back to a number so every name works. */
+    static String packageForName(String name) {
+        String cleaned = name.toLowerCase(java.util.Locale.ROOT)
+                .replaceAll("[^a-z0-9]+", "");
+        if (cleaned.length() > 30) cleaned = cleaned.substring(0, 30);
+        if (cleaned.isEmpty()) {
+            cleaned = "app" + (System.currentTimeMillis() / 1000 % 100000);
+        } else if (Character.isDigit(cleaned.charAt(0))) {
+            cleaned = "app" + cleaned;
+        }
+        return "com.sp.webos.app." + cleaned;
+    }
+
+    private String typedName() {
+        return nameBox.getText().toString().trim();
+    }
+
+    private void updatePackagePreview() {
+        String name = typedName();
+        if (name.isEmpty()) {
+            packagePreview.setText("Naam khaali = default 'Web App' (purana wala replace hoga)");
+        } else {
+            packagePreview.setText("Package ID: " + packageForName(name)
+                    + "\nYe naam wala app alag se install hoga — baaki apps safe rahenge.");
+        }
     }
 
     @Override
@@ -133,16 +187,23 @@ public class MainActivity extends Activity {
             Toast.makeText(this, "Pehle HTML file chuno ya code paste karo", Toast.LENGTH_LONG).show();
             return;
         }
+        String name = typedName();
+        final String label = name.isEmpty() ? null : name;
+        final String pkg = name.isEmpty() ? null : packageForName(name);
         setStatus("APK ban raha hai... ⏳");
         installBtn.setEnabled(false);
         new Thread(() -> {
             try {
-                builtApk = ApkMaker.buildApk(this, html);
-                setStatus("✅ APK taiyaar!\nPath: " + builtApk.getAbsolutePath()
-                        + "\nAb 'Install Karo' dabao. (Naya APK banane par purana generated app replace hoga — V1 limit.)");
+                builtApk = ApkMaker.buildApk(this, html, label, pkg);
+                builtLabel = label == null ? "Web App" : label;
+                builtPackage = pkg == null ? ApkPatcher.OLD_PACKAGE : pkg;
+                setStatus("✅ APK taiyaar!\nApp: " + builtLabel + "\nPackage: " + builtPackage
+                        + "\nPath: " + builtApk.getAbsolutePath()
+                        + "\nAb 'Install Karo' dabao.");
                 runOnUiThread(() -> installBtn.setEnabled(true));
             } catch (Exception e) {
-                setStatus("❌ APK nahi bana: " + e.getClass().getSimpleName() + ": " + e.getMessage());
+                setStatus("❌ APK nahi bana: " + e.getClass().getSimpleName() + ": " + e.getMessage()
+                        + "\n(Tip: agar naam diya tha, to naam khaali karke ek baar phir try karo — default mode hamesha chalta hai.)");
             }
         }).start();
     }
@@ -188,7 +249,8 @@ public class MainActivity extends Activity {
         if (intent != null && INSTALL_ACTION.equals(intent.getAction())) {
             int st = intent.getIntExtra(PackageInstaller.EXTRA_STATUS, -99);
             if (st == PackageInstaller.STATUS_SUCCESS) {
-                setStatus("🎉 Web App install ho gaya! Home screen par 'Web App' dekho.");
+                setStatus("🎉 '" + (builtLabel == null ? "Web App" : builtLabel)
+                        + "' install ho gaya! Home screen par dekho.");
             } else if (st == PackageInstaller.STATUS_PENDING_USER_ACTION) {
                 Intent confirm = intent.getParcelableExtra(Intent.EXTRA_INTENT);
                 if (confirm != null) startActivity(confirm);

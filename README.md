@@ -27,12 +27,26 @@ Har push par GitHub Actions dono APK banata hai (pehle template, phir use
 builder mein embed karke builder). Taiyaar APK repo ke
 **Actions → latest run → Artifacts → `SP-WEB-OS-APK`** se download hota hai.
 
-## V1 ki seemayein (honest list)
+## V2 — naam, package aur browser wali permissions (2026-11-02)
 
-- Generated app ka **naam "Web App", icon default, package
-  `com.sp.webos.webapp`** fixed hai. Isliye ek samay par phone mein ek hi
-  generated app rahega — naya APK install karne par purana replace ho jayega.
-  (Naam/icon/package badalna = binary manifest editing, V2 ke liye rakha hai.)
+- **Har app ka apna naam + package:** Builder mein app ka naam do to binary
+  manifest (AXML string pool) aur `resources.arsc` patch karke us app ko
+  apni pehchan milti hai — package `com.sp.webos.app.<naam>`. Alag naam =
+  alag app, **kai web apps ek saath** phone par reh sakte hain. Naam khaali
+  chhodne par purana default "Web App" (`com.sp.webos.webapp`) banta hai.
+  Hindi naam bhi chalega (package ke liye number wala id ban jata hai).
+- **Browser-like + advanced permissions:** Generated Web App ab web page ko
+  browser jaisi takat de sakta hai — **camera, microphone (WebRTC /
+  getUserMedia), location (geolocation), file upload (`<input type=file>`),
+  downloads (DownloadManager), HTML5 fullscreen video, notifications
+  permission, vibration**. Jaise browser mein hota hai, permission runtime
+  par maangi jati hai — page puchega, Android dialog dikhayega, faisla
+  user ka. Web notifications ka permission app ke paas hai, lekin WebView
+  mein push notification ke liye aage JS bridge chahiye hoga.
+
+## Seemayein (honest list)
+
+- Generated app ka **icon abhi default** hai (custom icon = V3 idea).
 - HTML **single file** hona chahiye — CSS/JS usi file ke andar inline.
 - Signing key repo mein base64 form mein hai (password `spwebos123`) — ye ek
   throwaway **dev key** hai, sirf personal use ke liye. Kabhi public release
@@ -40,10 +54,9 @@ builder mein embed karke builder). Taiyaar APK repo ke
 - On-device signing apksig se hota hai; kisi phone par install error aaye to
   error message ke saath issue kholo — wahi sabse achha test data hai.
 
-## Roadmap (V2 ideas)
+## Roadmap (V3 ideas)
 
-- Generated app ka custom naam + icon
-- Multiple templates (alag package names) taaki kai web apps ek saath reh saken
+- Generated app ka custom icon
 - ZIP se multi-file projects (assets folder ke saath)
 
 ---

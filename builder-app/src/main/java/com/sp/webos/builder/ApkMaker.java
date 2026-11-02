@@ -28,6 +28,8 @@ import java.util.zip.ZipOutputStream;
 /**
  * Builds a signed APK on the phone itself:
  *   template.apk  ->  replace assets/index.html with the user's HTML
+ *                 ->  optionally give the app its own name + package id
+ *                     (ApkPatcher) so many apps can live side by side
  *                 ->  re-sign with the built-in key (apksig)
  * No PC, no server, no internet needed.
  */
@@ -37,6 +39,8 @@ public class ApkMaker {
     private static final String KEY_ASSET = "signing_key.b64";
     private static final char[] KEY_PASS = "spwebos123".toCharArray();
     private static final String HTML_ENTRY = "assets/index.html";
+    private static final String MANIFEST_ENTRY = "AndroidManifest.xml";
+    private static final String ARSC_ENTRY = "resources.arsc";
 
     /** Counts bytes written so STORED entries can be 4-byte aligned. */
     private static class CountingOutputStream extends OutputStream {
@@ -51,7 +55,8 @@ public class ApkMaker {
         @Override public void close() throws IOException { out.close(); }
     }
 
-    public static File buildApk(Context ctx, byte[] htmlBytes) throws Exception {
+    public static File buildApk(Context ctx, byte[] htmlBytes,
+                                String appLabel, String packageName) throws Exception {
         File workDir = new File(ctx.getCacheDir(), "apkbuild");
         //noinspection ResultOfMethodCallIgnored
         workDir.mkdirs();
@@ -60,7 +65,7 @@ public class ApkMaker {
         copyAsset(ctx, TEMPLATE_ASSET, template);
 
         File unsigned = new File(workDir, "unsigned.apk");
-        rewriteZip(template, unsigned, htmlBytes);
+        rewriteZip(template, unsigned, htmlBytes, appLabel, packageName);
 
         File outDir = ctx.getExternalFilesDir(null);
         if (outDir == null) outDir = ctx.getFilesDir();
@@ -88,11 +93,16 @@ public class ApkMaker {
 
     /**
      * Copies the template ZIP, dropping old signatures (META-INF) and swapping
-     * in the user's HTML. Entry compression methods are preserved; STORED
-     * entries (e.g. resources.arsc) are kept STORED and 4-byte aligned,
-     * which Android requires for targetSdk 30+.
+     * in the user's HTML. When a name/package is given, the manifest and
+     * resources.arsc are patched so this app gets its own identity.
+     * Entry compression methods are preserved; STORED entries (e.g.
+     * resources.arsc) are kept STORED and 4-byte aligned, which Android
+     * requires for targetSdk 30+.
      */
-    private static void rewriteZip(File in, File out, byte[] htmlBytes) throws IOException {
+    private static void rewriteZip(File in, File out, byte[] htmlBytes,
+                                   String appLabel, String packageName) throws IOException {
+        boolean patchIdentity = packageName != null
+                && !packageName.equals(ApkPatcher.OLD_PACKAGE);
         boolean htmlWritten = false;
         CountingOutputStream counting = new CountingOutputStream(
                 new BufferedOutputStream(new FileOutputStream(out)));
@@ -106,6 +116,10 @@ public class ApkMaker {
                 if (name.equals(HTML_ENTRY)) {
                     data = htmlBytes;
                     htmlWritten = true;
+                } else if (patchIdentity && name.equals(MANIFEST_ENTRY)) {
+                    data = ApkPatcher.patchManifest(data, packageName, appLabel);
+                } else if (patchIdentity && name.equals(ARSC_ENTRY)) {
+                    data = ApkPatcher.patchArscPackage(data, packageName);
                 }
                 writeEntry(zout, counting, name, data, e.getMethod());
                 zin.closeEntry();
