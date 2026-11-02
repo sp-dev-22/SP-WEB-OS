@@ -16,6 +16,7 @@ import android.view.WindowManager;
 import android.webkit.CookieManager;
 import android.webkit.DownloadListener;
 import android.webkit.GeolocationPermissions;
+import android.webkit.JavascriptInterface;
 import android.webkit.PermissionRequest;
 import android.webkit.URLUtil;
 import android.webkit.ValueCallback;
@@ -236,7 +237,50 @@ public class MainActivity extends Activity {
             }
         });
 
+        // ---- SpWebOS JS bridge: notifications + background keep-alive ----
+        NotifyHelper.ensureChannel(this);
+        webView.addJavascriptInterface(new SpWebOsBridge(), "SpWebOS");
+
         webView.loadUrl("file:///android_asset/index.html");
+    }
+
+    /**
+     * JavaScript API available to the page as window.SpWebOS:
+     *   SpWebOS.notify(title, body)                    -> notification abhi
+     *   SpWebOS.scheduleNotify(seconds, title, body)   -> notification kuch der baad
+     *                                                     (app band ho tab bhi aayega)
+     *   SpWebOS.keepAlive(true/false)                  -> background foreground-service
+     *   SpWebOS.toast(text)                            -> chhota sa toast
+     */
+    public class SpWebOsBridge {
+
+        @JavascriptInterface
+        public void notify(String title, String body) {
+            NotifyHelper.post(MainActivity.this,
+                    (int) (System.currentTimeMillis() % Integer.MAX_VALUE), title, body);
+        }
+
+        @JavascriptInterface
+        public void scheduleNotify(double delaySeconds, String title, String body) {
+            long when = System.currentTimeMillis() + (long) (delaySeconds * 1000);
+            NotifyHelper.schedule(MainActivity.this, when, title, body);
+        }
+
+        @JavascriptInterface
+        public void keepAlive(boolean on) {
+            Intent svc = new Intent(MainActivity.this, WebAppService.class);
+            if (on) {
+                if (Build.VERSION.SDK_INT >= 26) startForegroundService(svc);
+                else startService(svc);
+            } else {
+                stopService(svc);
+            }
+        }
+
+        @JavascriptInterface
+        public void toast(String text) {
+            runOnUiThread(() -> Toast.makeText(MainActivity.this, text, Toast.LENGTH_SHORT).show());
+        }
     }
 
     private boolean allGranted(List<String> perms) {

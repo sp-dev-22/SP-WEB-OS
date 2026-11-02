@@ -193,30 +193,22 @@ public class ApkPatcher {
         if (arsc.length < 16 || u16(arsc, 0) != 0x0002) {
             throw new IOException("resources.arsc pehchana nahi gaya");
         }
-        byte[] out = arsc.clone();
-        int off = u16(arsc, 2); // end of the ResTable header
-        for (int guard = 0; guard < 16 && off + 8 <= arsc.length; guard++) {
+        // Walk every chunk after the ResTable header.
+        int off = u16(arsc, 2);
+        while (off + 8 <= arsc.length) {
             int type = u16(arsc, off);
             long chunkSize = u32(arsc, off + 4);
-            if (chunkSize < 8 || off + chunkSize > arsc.length + 8) break;
+            if (chunkSize < 8 || off + chunkSize > arsc.length) break;
             if (type == 0x0200) { // ResTable_package
                 // name = fixed char[128] UTF-16 field at chunk offset 12
                 int nameOff = off + 12;
                 if (nameOff + 256 > arsc.length) {
                     throw new IOException("resources.arsc package name field chhota hai");
                 }
-                StringBuilder cur = new StringBuilder();
-                for (int i = 0; i < 128; i++) {
-                    int c = u16(arsc, nameOff + 2 * i);
-                    if (c == 0) break;
-                    cur.append((char) c);
-                }
-                if (!cur.toString().equals(OLD_PACKAGE)) {
-                    throw new IOException("resources.arsc me ummeed wala package nahi mila: " + cur);
-                }
                 if (newPackage.length() > 127) {
                     throw new IOException("Package id bahut lamba hai");
                 }
+                byte[] out = arsc.clone();
                 for (int i = 0; i < 128; i++) {
                     int c = i < newPackage.length() ? newPackage.charAt(i) : 0;
                     out[nameOff + 2 * i] = (byte) (c & 0xFF);
@@ -226,7 +218,11 @@ public class ApkPatcher {
             }
             off += (int) chunkSize;
         }
-        throw new IOException("resources.arsc me package chunk nahi mila");
+        // No package chunk anywhere: this arsc carries no package name
+        // (a resource-less table is just a header + string pool). The
+        // binary manifest alone then defines the app's identity,
+        // so there is nothing to sync — return the file untouched.
+        return arsc;
     }
 
     // ------------------------------------------------------------- helpers

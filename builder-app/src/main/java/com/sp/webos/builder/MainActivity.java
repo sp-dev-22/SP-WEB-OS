@@ -1,11 +1,17 @@
 package com.sp.webos.builder;
 
+import android.Manifest;
 import android.app.Activity;
+import android.app.AlertDialog;
+import android.content.ContentValues;
 import android.content.Intent;
 import android.content.pm.PackageInstaller;
+import android.content.pm.PackageManager;
 import android.net.Uri;
 import android.os.Build;
 import android.os.Bundle;
+import android.os.Environment;
+import android.provider.MediaStore;
 import android.provider.Settings;
 import android.text.Editable;
 import android.text.TextWatcher;
@@ -20,20 +26,27 @@ import android.widget.Toast;
 import java.io.ByteArrayOutputStream;
 import java.io.File;
 import java.io.FileInputStream;
+import java.io.FileOutputStream;
 import java.io.InputStream;
 import java.io.OutputStream;
 import java.nio.charset.StandardCharsets;
+import java.text.SimpleDateFormat;
+import java.util.Arrays;
+import java.util.Date;
+import java.util.Locale;
 
 /**
  * SP WEB OS — single-file HTML ko phone par hi APK banane wala app.
  * Flow: HTML file chuno ya code paste karo -> app ka naam do (optional)
  * -> "APK Banao" -> "Install Karo".
+ * Har build ka HTML app ki apni library me save hota hai, aur bana hua
+ * APK Downloads/SP WEB OS folder me bhi copy hota hai.
  * Alag naam = alag package id = kai apps ek saath phone par reh sakte hain.
- * Naam khaali chhodo to purana default "Web App" banta hai.
  */
 public class MainActivity extends Activity {
 
     private static final int REQ_PICK_HTML = 42;
+    private static final int REQ_WRITE_PERM = 77;
     private static final String INSTALL_ACTION = "com.sp.webos.INSTALL_RESULT";
 
     private TextView status;
@@ -77,6 +90,11 @@ public class MainActivity extends Activity {
             startActivityForResult(i, REQ_PICK_HTML);
         });
         root.addView(pickBtn);
+
+        Button libraryBtn = new Button(this);
+        libraryBtn.setText("📚 Saved HTML (Library)");
+        libraryBtn.setOnClickListener(v -> showLibrary());
+        root.addView(libraryBtn);
 
         codeBox = new EditText(this);
         codeBox.setHint("...ya yahan HTML code paste karo");
@@ -126,7 +144,7 @@ public class MainActivity extends Activity {
     /** App name -> unique package id. Latin letters/digits survive;
      *  anything else falls back to a number so every name works. */
     static String packageForName(String name) {
-        String cleaned = name.toLowerCase(java.util.Locale.ROOT)
+        String cleaned = name.toLowerCase(Locale.ROOT)
                 .replaceAll("[^a-z0-9]+", "");
         if (cleaned.length() > 30) cleaned = cleaned.substring(0, 30);
         if (cleaned.isEmpty()) {
@@ -150,6 +168,126 @@ public class MainActivity extends Activity {
                     + "\nYe naam wala app alag se install hoga — baaki apps safe rahenge.");
         }
     }
+
+    // ---------------------------------------------------------- HTML library
+
+    private File libraryDir() {
+        File dir = new File(getFilesDir(), "html_library");
+        //noinspection ResultOfMethodCallIgnored
+        dir.mkdirs();
+        return dir;
+    }
+
+    private void saveToLibrary(byte[] html, String baseName) {
+        try {
+            String safe = baseName.replaceAll("[\\\\/:*?\"<>|\\s]+", "_");
+            if (safe.isEmpty()) safe = "html";
+            if (safe.length() > 40) safe = safe.substring(0, 40);
+            String stamp = new SimpleDateFormat("yyyyMMdd-HHmmss", Locale.ROOT).format(new Date());
+            File f = new File(libraryDir(), safe + "_" + stamp + ".html");
+            try (OutputStream out = new FileOutputStream(f)) {
+                out.write(html);
+            }
+        } catch (Exception ignored) {
+            // Library save fail ho jaye to bhi build nahi rukna chahiye.
+        }
+    }
+
+    private void showLibrary() {
+        File[] files = libraryDir().listFiles((d, n) -> n.endsWith(".html"));
+        if (files == null || files.length == 0) {
+            Toast.makeText(this, "Library khaali hai — pehle ek APK banao, HTML yahan save ho jayega",
+                    Toast.LENGTH_LONG).show();
+            return;
+        }
+        Arrays.sort(files, (a, b) -> Long.compare(b.lastModified(), a.lastModified()));
+        String[] labels = new String[files.length];
+        for (int i = 0; i < files.length; i++) {
+            labels[i] = files[i].getName() + "  (" + (files[i].length() / 1024) + " KB)";
+        }
+        new AlertDialog.Builder(this)
+                .setTitle("📚 Saved HTML — ek chuno")
+                .setItems(labels, (dialog, which) -> loadFromLibrary(files[which]))
+                .setNegativeButton("Band Karo", null)
+                .show();
+    }
+
+    private void loadFromLibrary(File f) {
+        try (InputStream in = new FileInputStream(f)) {
+            ByteArrayOutputStream baos = new ByteArrayOutputStream();
+            byte[] buf = new byte[8192];
+            int n;
+            while ((n = in.read(buf)) != -1) baos.write(buf, 0, n);
+            pickedHtml = baos.toByteArray();
+            pickedName = f.getName();
+            codeBox.setText("");
+            setStatus("Library se load ho gaya: " + pickedName + " (" + pickedHtml.length
+                    + " bytes)\nAb naam dekar (ya bina naam) 'APK Banao' dabao.");
+        } catch (Exception e) {
+            setStatus("Library file padhne me dikkat: " + e.getMessage());
+        }
+    }
+
+    // ---------------------------------------------------------- Downloads copy
+
+    /** Bane hue APK ki copy Downloads/SP WEB OS me rakhta hai.
+     *  @return jahan copy hua uska varnan, ya null agar na ho paya ho. */
+    private String copyToDownloads(File apk, String displayLabel) {
+        String fileName = displayLabel.replaceAll("[\\\\/:*?\"<>|]", "_") + ".apk";
+        try {
+            if (Build.VERSION.SDK_INT >= 29) {
+                return copyToDownloadsModern(apk, fileName);
+            }
+            if (checkSelfPermission(Manifest.permission.WRITE_EXTERNAL_STORAGE)
+                    != PackageManager.PERMISSION_GRANTED) {
+                requestPermissions(new String[]{Manifest.permission.WRITE_EXTERNAL_STORAGE},
+                        REQ_WRITE_PERM);
+                return null;
+            }
+            File dir = new File(Environment.getExternalStoragePublicDirectory(
+                    Environment.DIRECTORY_DOWNLOADS), "SP WEB OS");
+            //noinspection ResultOfMethodCallIgnored
+            dir.mkdirs();
+            File dest = new File(dir, fileName);
+            copyFile(apk, dest);
+            return dest.getAbsolutePath();
+        } catch (Exception e) {
+            return null;
+        }
+    }
+
+    private String copyToDownloadsModern(File apk, String fileName) throws Exception {
+        ContentValues cv = new ContentValues();
+        cv.put(MediaStore.Downloads.DISPLAY_NAME, fileName);
+        cv.put(MediaStore.Downloads.MIME_TYPE, "application/vnd.android.package-archive");
+        cv.put(MediaStore.Downloads.RELATIVE_PATH,
+                Environment.DIRECTORY_DOWNLOADS + "/SP WEB OS");
+        cv.put(MediaStore.Downloads.IS_PENDING, 1);
+        Uri uri = getContentResolver().insert(MediaStore.Downloads.EXTERNAL_CONTENT_URI, cv);
+        if (uri == null) return null;
+        try (InputStream in = new FileInputStream(apk);
+             OutputStream out = getContentResolver().openOutputStream(uri)) {
+            if (out == null) return null;
+            byte[] buf = new byte[16384];
+            int n;
+            while ((n = in.read(buf)) != -1) out.write(buf, 0, n);
+        }
+        ContentValues done = new ContentValues();
+        done.put(MediaStore.Downloads.IS_PENDING, 0);
+        getContentResolver().update(uri, done, null, null);
+        return "Downloads/SP WEB OS/" + fileName;
+    }
+
+    private static void copyFile(File src, File dest) throws Exception {
+        try (InputStream in = new FileInputStream(src);
+             OutputStream out = new FileOutputStream(dest)) {
+            byte[] buf = new byte[16384];
+            int n;
+            while ((n = in.read(buf)) != -1) out.write(buf, 0, n);
+        }
+    }
+
+    // ---------------------------------------------------------- pick / build / install
 
     @Override
     protected void onActivityResult(int requestCode, int resultCode, Intent data) {
@@ -190,6 +328,9 @@ public class MainActivity extends Activity {
         String name = typedName();
         final String label = name.isEmpty() ? null : name;
         final String pkg = name.isEmpty() ? null : packageForName(name);
+        String libBase = label != null ? label
+                : (pickedName != null ? pickedName.replaceAll("\\.html?$", "") : "pasted-code");
+        saveToLibrary(html, libBase);
         setStatus("APK ban raha hai... ⏳");
         installBtn.setEnabled(false);
         new Thread(() -> {
@@ -197,8 +338,12 @@ public class MainActivity extends Activity {
                 builtApk = ApkMaker.buildApk(this, html, label, pkg);
                 builtLabel = label == null ? "Web App" : label;
                 builtPackage = pkg == null ? ApkPatcher.OLD_PACKAGE : pkg;
+                String dl = copyToDownloads(builtApk, builtLabel);
                 setStatus("✅ APK taiyaar!\nApp: " + builtLabel + "\nPackage: " + builtPackage
                         + "\nPath: " + builtApk.getAbsolutePath()
+                        + (dl != null ? "\n📥 Downloads me copy: " + dl
+                                      : "\n(Downloads copy nahi ho paya — APK upar wale path par hai)")
+                        + "\n📚 HTML library me save ho gaya."
                         + "\nAb 'Install Karo' dabao.");
                 runOnUiThread(() -> installBtn.setEnabled(true));
             } catch (Exception e) {
@@ -238,8 +383,7 @@ public class MainActivity extends Activity {
             setStatus("Installer khul raha hai... 📲");
         } catch (Exception e) {
             setStatus("❌ Install shuru nahi hua: " + e.getMessage()
-                    + "\nAPK is path par saved hai, file manager se bhi install kar sakte ho:\n"
-                    + builtApk.getAbsolutePath());
+                    + "\nAPK Downloads/SP WEB OS folder me bhi hai, wahan se bhi install kar sakte ho.");
         }
     }
 

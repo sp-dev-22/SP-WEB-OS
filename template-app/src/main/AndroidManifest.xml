@@ -14,6 +14,10 @@
     <uses-permission android:name="android.permission.VIBRATE" />
     <uses-permission android:name="android.permission.WRITE_EXTERNAL_STORAGE"
         android:maxSdkVersion="28" />
+    <!-- Background running + notifications (SpWebOS JS bridge) -->
+    <uses-permission android:name="android.permission.FOREGROUND_SERVICE" />
+    <uses-permission android:name="android.permission.FOREGROUND_SERVICE_SPECIAL_USE" />
+    <uses-permission android:name="android.permission.SCHEDULE_EXACT_ALARM" />
 
     <!-- Hardware is optional: the app must still install on devices without it. -->
     <uses-feature android:name="android.hardware.camera" android:required="false" />
@@ -22,7 +26,7 @@
 
     <application
         android:label="Web App"
-        android:icon="@android:drawable/sym_def_app_icon"
+        android:icon="@drawable/app_icon"
         android:usesCleartextTraffic="true"
         android:theme="@android:style/Theme.Material.Light.NoActionBar">
 
@@ -35,5 +39,20 @@
                 <category android:name="android.intent.category.LAUNCHER" />
             </intent-filter>
         </activity>
+
+        <!-- Keep-alive foreground service (SpWebOS.keepAlive bridge) -->
+        <service
+            android:name=".WebAppService"
+            android:exported="false"
+            android:foregroundServiceType="specialUse">
+            <property
+                android:name="android.app.PROPERTY_SPECIAL_USE_FGS_SUBTYPE"
+                android:value="Keeps the user's own web app alive in the background so it can show its notifications and scheduled reminders" />
+        </service>
+
+        <!-- Scheduled notifications (SpWebOS.scheduleNotify bridge) -->
+        <receiver
+            android:name=".NotifyReceiver"
+            android:exported="false" />
     </application>
 </manifest>

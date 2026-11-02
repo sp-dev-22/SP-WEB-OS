@@ -44,6 +44,30 @@ builder mein embed karke builder). Taiyaar APK repo ke
   user ka. Web notifications ka permission app ke paas hai, lekin WebView
   mein push notification ke liye aage JS bridge chahiye hoga.
 
+## V3 — storage, background aur notifications (2026-11-02)
+
+- **APK Downloads me:** Har bana hua APK `Downloads/SP WEB OS/<App Naam>.apk`
+  me bhi copy hota hai.
+- **HTML Library:** Har build ka HTML SP WEB OS ke apne storage me save
+  hota hai — "📚 Saved HTML (Library)" se kabhi bhi wapas load karke
+  dobara APK bana sakte ho.
+- **Apna icon:** Generated apps ko ab SP WEB OS ka apna deep-pink "W" icon
+  milta hai (pehle wala generic Android icon gaya). Har app ka *alag*
+  custom icon abhi nahi hai — icon ek compiled resource hota hai, uske
+  liye workflow me ek extra step lagega (aage ka plan).
+- **Background + Notifications — `SpWebOS` JS bridge:** Generated app ki
+  web page ko ek native bridge milta hai:
+  - `SpWebOS.notify(title, body)` — turant notification
+  - `SpWebOS.scheduleNotify(seconds, title, body)` — AlarmManager se
+    scheduled notification; **app band ho tab bhi aata hai**
+  - `SpWebOS.keepAlive(true/false)` — foreground service jo app ko
+    background me zinda rakhta hai (persistent notification ke saath)
+  - `SpWebOS.toast(text)` — chhota toast
+  Sach ye bhi hai: keep-alive process ko zinda rakhta hai, lekin page ke
+  JS timers background me WebView/OEM battery manager se throttle ho
+  sakte hain — isiliye time-based kaam ke liye `scheduleNotify` hi
+  bharosemand rasta hai.
+
 ## Seemayein (honest list)
 
 - Generated app ka **icon abhi default** hai (custom icon = V3 idea).
