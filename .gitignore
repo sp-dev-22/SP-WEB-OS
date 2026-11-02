@@ -1,0 +1,7 @@
+.gradle/
+*/build/
+local.properties
+builder-app/src/main/assets/template.apk
+*.pem
+*.p12
+!builder-app/src/main/assets/signing_key.b64
