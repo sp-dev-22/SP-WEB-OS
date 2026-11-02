@@ -68,6 +68,19 @@ builder mein embed karke builder). Taiyaar APK repo ke
   sakte hain — isiliye time-based kaam ke liye `scheduleNotify` hi
   bharosemand rasta hai.
 
+## Build 4 — app ka naam apne aap (2026-11-02)
+
+Har generated app ko ab naam is priority se milta hai:
+
+1. **User input** — builder me naam diya to wahi
+2. **HTML `<title>`** — naam khaali ho to page ke title tag se
+3. **File ka naam** — title bhi na ho to chuni hui HTML file ke naam se
+   (extension aur library ka timestamp hata kar)
+
+Koi source na mile tabhi purana default "Web App" banta hai. Jo naam
+mila, usi se us app ka alag package id bhi banta hai, aur builder ki
+preview line me naam ka source bhi dikhta hai.
+
 ## Seemayein (honest list)
 
 - Generated app ka **icon abhi default** hai (custom icon = V3 idea).

@@ -34,6 +34,8 @@ import java.text.SimpleDateFormat;
 import java.util.Arrays;
 import java.util.Date;
 import java.util.Locale;
+import java.util.regex.Matcher;
+import java.util.regex.Pattern;
 
 /**
  * SP WEB OS — single-file HTML ko phone par hi APK banane wala app.
@@ -104,9 +106,17 @@ public class MainActivity extends Activity {
         root.addView(codeBox);
 
         nameBox = new EditText(this);
-        nameBox.setHint("App ka naam (optional) — jaise: My Notes, Camera Test");
+        nameBox.setHint("App ka naam (optional) — khaali chhodo to HTML title / file naam se apne aap banega");
         nameBox.setSingleLine(true);
         root.addView(nameBox);
+
+        codeBox.addTextChangedListener(new TextWatcher() {
+            @Override public void beforeTextChanged(CharSequence s, int a, int b, int c) { }
+            @Override public void onTextChanged(CharSequence s, int a, int b, int c) {
+                updatePackagePreview();
+            }
+            @Override public void afterTextChanged(Editable s) { }
+        });
 
         packagePreview = new TextView(this);
         packagePreview.setTextSize(12);
@@ -159,13 +169,69 @@ public class MainActivity extends Activity {
         return nameBox.getText().toString().trim();
     }
 
+    // ---------------------------------------------------------- app name sources
+
+    private static final Pattern TITLE_PATTERN =
+            Pattern.compile("<title[^>]*>(.*?)</title>", Pattern.CASE_INSENSITIVE | Pattern.DOTALL);
+
+    /** HTML ke <title> tag se app ka naam. Na mile to null. */
+    static String titleFromHtml(byte[] html) {
+        if (html == null) return null;
+        String head = new String(html, 0, Math.min(html.length, 65536), StandardCharsets.UTF_8);
+        Matcher m = TITLE_PATTERN.matcher(head);
+        if (!m.find()) return null;
+        String t = m.group(1)
+                .replace("&nbsp;", " ")
+                .replace("&lt;", "<")
+                .replace("&gt;", ">")
+                .replace("&quot;", "\"")
+                .replace("&#39;", "'")
+                .replace("&apos;", "'")
+                .replace("&amp;", "&")
+                .replaceAll("\\s+", " ")
+                .trim();
+        if (t.length() > 50) t = t.substring(0, 50).trim();
+        return t.isEmpty() ? null : t;
+    }
+
+    /** File ke path/naam se saaf naam: folder, extension aur library ka
+     *  timestamp suffix hata kar. Na bane to null. */
+    static String fileBaseName(String name) {
+        if (name == null) return null;
+        String s = name;
+        int cut = Math.max(s.lastIndexOf('/'), s.lastIndexOf(':'));
+        if (cut >= 0) s = s.substring(cut + 1);
+        s = s.replaceAll("(?i)\\.(html?|txt)$", "");
+        s = s.replaceAll("_\\d{8}-\\d{6}$", ""); // library stamp
+        s = s.replaceAll("[_]+", " ").trim();
+        if (s.length() > 50) s = s.substring(0, 50).trim();
+        return s.isEmpty() ? null : s;
+    }
+
+    /**
+     * Is build ka final app naam aur uska source.
+     * Priority: 1) user input  2) HTML <title>  3) file ka naam.
+     * Kuch na mile to null (purana default "Web App").
+     * @return {label, sourceText} ya null
+     */
+    private String[] effectiveName() {
+        String typed = typedName();
+        if (!typed.isEmpty()) return new String[]{typed, "aapke diye naam se"};
+        String fromTitle = titleFromHtml(currentHtml());
+        if (fromTitle != null) return new String[]{fromTitle, "HTML title se"};
+        String fromFile = fileBaseName(pickedName);
+        if (fromFile != null) return new String[]{fromFile, "file ke naam se"};
+        return null;
+    }
+
     private void updatePackagePreview() {
-        String name = typedName();
-        if (name.isEmpty()) {
-            packagePreview.setText("Naam khaali = default 'Web App' (purana wala replace hoga)");
+        String[] eff = effectiveName();
+        if (eff == null) {
+            packagePreview.setText("Naam kisi source se nahi mila = default 'Web App' (purana wala replace hoga)");
         } else {
-            packagePreview.setText("Package ID: " + packageForName(name)
-                    + "\nYe naam wala app alag se install hoga — baaki apps safe rahenge.");
+            packagePreview.setText("App ka naam (" + eff[1] + "): " + eff[0]
+                    + "\nPackage ID: " + packageForName(eff[0])
+                    + "\nYe app alag se install hoga — baaki apps safe rahenge.");
         }
     }
 
@@ -221,6 +287,7 @@ public class MainActivity extends Activity {
             pickedHtml = baos.toByteArray();
             pickedName = f.getName();
             codeBox.setText("");
+            updatePackagePreview();
             setStatus("Library se load ho gaya: " + pickedName + " (" + pickedHtml.length
                     + " bytes)\nAb naam dekar (ya bina naam) 'APK Banao' dabao.");
         } catch (Exception e) {
@@ -302,6 +369,7 @@ public class MainActivity extends Activity {
                 while ((n = in.read(buf)) != -1) baos.write(buf, 0, n);
                 pickedHtml = baos.toByteArray();
                 pickedName = uri.getLastPathSegment();
+                updatePackagePreview();
                 setStatus("File mil gayi: " + pickedName + " (" + pickedHtml.length + " bytes)\nAb 'APK Banao' dabao.");
             } catch (Exception e) {
                 setStatus("File padhne mein dikkat: " + e.getMessage());
@@ -325,9 +393,10 @@ public class MainActivity extends Activity {
             Toast.makeText(this, "Pehle HTML file chuno ya code paste karo", Toast.LENGTH_LONG).show();
             return;
         }
-        String name = typedName();
-        final String label = name.isEmpty() ? null : name;
-        final String pkg = name.isEmpty() ? null : packageForName(name);
+        String[] eff = effectiveName();
+        final String label = eff == null ? null : eff[0];
+        final String pkg = eff == null ? null : packageForName(eff[0]);
+        final String nameSource = eff == null ? "default" : eff[1];
         String libBase = label != null ? label
                 : (pickedName != null ? pickedName.replaceAll("\\.html?$", "") : "pasted-code");
         saveToLibrary(html, libBase);
@@ -339,7 +408,7 @@ public class MainActivity extends Activity {
                 builtLabel = label == null ? "Web App" : label;
                 builtPackage = pkg == null ? ApkPatcher.OLD_PACKAGE : pkg;
                 String dl = copyToDownloads(builtApk, builtLabel);
-                setStatus("✅ APK taiyaar!\nApp: " + builtLabel + "\nPackage: " + builtPackage
+                setStatus("✅ APK taiyaar!\nApp: " + builtLabel + " (naam: " + nameSource + ")\nPackage: " + builtPackage
                         + "\nPath: " + builtApk.getAbsolutePath()
                         + (dl != null ? "\n📥 Downloads me copy: " + dl
                                       : "\n(Downloads copy nahi ho paya — APK upar wale path par hai)")
