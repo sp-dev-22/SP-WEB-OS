@@ -31,11 +31,13 @@ import java.util.zip.ZipOutputStream;
 
 /**
  * Builds a signed APK on the phone itself:
- *   template.apk  ->  replace assets/index.html with the user's HTML
+ *   template APK  ->  swap asset files (assets/index.html, assets/url.txt…)
  *                 ->  optionally give the app its own name + package id
  *                     (ApkPatcher) so many apps can live side by side
  *                 ->  re-sign with the built-in key (apksig)
- * No PC, no server, no internet needed.
+ * The signed APK is an intermediate file: it lives in cacheDir and the
+ * Install flow reads it from there. Durable copies (Downloads) are the
+ * caller's job. No PC, no server, no internet needed.
  */
 public class ApkMaker {
 
@@ -75,22 +77,69 @@ public class ApkMaker {
     public static File buildApk(Context ctx, byte[] htmlBytes,
                                 String appLabel, String packageName,
                                 byte[] iconPng) throws Exception {
+        Map<String, byte[]> swaps = new HashMap<>();
+        if (htmlBytes != null) swaps.put(HTML_ENTRY, htmlBytes);
+        return buildApk(ctx, TEMPLATE_ASSET, swaps, appLabel, packageName, iconPng);
+    }
+
+    /**
+     * General build (v5.1): choose which bundled template APK to clone and
+     * which asset entries to swap inside it. {@code assetSwaps} maps zip
+     * entry names (e.g. "assets/index.html", "assets/url.txt") to the new
+     * bytes; it composes with the icon swap and the identity patch.
+     * The signed result is written to cacheDir/WebApp.apk (intermediate
+     * file — nothing durable is kept inside the app).
+     */
+    public static File buildApk(Context ctx, String templateAsset,
+                                Map<String, byte[]> assetSwaps,
+                                String appLabel, String packageName,
+                                byte[] iconPng) throws Exception {
         File workDir = new File(ctx.getCacheDir(), "apkbuild");
         //noinspection ResultOfMethodCallIgnored
         workDir.mkdirs();
 
         File template = new File(workDir, "template.apk");
-        copyAsset(ctx, TEMPLATE_ASSET, template);
+        copyAsset(ctx, templateAsset, template);
 
         File unsigned = new File(workDir, "unsigned.apk");
-        rewriteZip(template, unsigned, htmlBytes, appLabel, packageName,
-                buildIconReplacements(iconPng));
+        rewriteZip(template, unsigned,
+                assetSwaps == null ? new HashMap<>() : assetSwaps,
+                appLabel, packageName, buildIconReplacements(iconPng));
 
-        File outDir = ctx.getExternalFilesDir(null);
-        if (outDir == null) outDir = ctx.getFilesDir();
-        File signed = new File(outDir, "WebApp.apk");
+        File signed = new File(ctx.getCacheDir(), "WebApp.apk");
         signApk(ctx, unsigned, signed);
         return signed;
+    }
+
+    /**
+     * Extracts the launcher icon actually baked into a built APK — the
+     * highest-density ic_launcher.png entry under res/mipmap. Works for
+     * user-designed and template-default icons alike. Null if not found.
+     */
+    public static byte[] extractIconPng(File apk) {
+        String[] byRank = {"xxxhdpi", "xxhdpi", "xhdpi", "hdpi", "mdpi"};
+        byte[][] found = new byte[byRank.length][];
+        try (ZipInputStream zin = new ZipInputStream(new FileInputStream(apk))) {
+            ZipEntry e;
+            while ((e = zin.getNextEntry()) != null) {
+                String canon = canonicalIconEntry(e.getName());
+                if (canon != null) {
+                    for (int i = 0; i < byRank.length; i++) {
+                        if (found[i] == null && canon.equals(
+                                "res/mipmap-" + byRank[i] + "/ic_launcher.png")) {
+                            found[i] = readAll(zin);
+                        }
+                    }
+                }
+                zin.closeEntry();
+            }
+        } catch (Exception ignored) {
+            // Icon na mile to caller icon.png save karna chhod dega.
+        }
+        for (byte[] b : found) {
+            if (b != null && b.length > 0) return b;
+        }
+        return null;
     }
 
     private static void copyAsset(Context ctx, String name, File dest) throws IOException {
@@ -112,18 +161,19 @@ public class ApkMaker {
 
     /**
      * Copies the template ZIP, dropping old signatures (META-INF) and swapping
-     * in the user's HTML. When a name/package is given, the manifest and
-     * resources.arsc are patched so this app gets its own identity.
-     * Entry compression methods are preserved; STORED entries (e.g.
-     * resources.arsc) are kept STORED and 4-byte aligned, which Android
-     * requires for targetSdk 30+.
+     * in the requested asset entries (assets/index.html, assets/url.txt…).
+     * Swap entries missing from the template are appended at the end.
+     * When a name/package is given, the manifest and resources.arsc are
+     * patched so this app gets its own identity. Entry compression methods
+     * are preserved; STORED entries (e.g. resources.arsc) are kept STORED
+     * and 4-byte aligned, which Android requires for targetSdk 30+.
      */
-    private static void rewriteZip(File in, File out, byte[] htmlBytes,
+    private static void rewriteZip(File in, File out, Map<String, byte[]> assetSwaps,
                                    String appLabel, String packageName,
                                    Map<String, byte[]> iconReplacements) throws IOException {
         boolean patchIdentity = packageName != null
                 && !packageName.equals(ApkPatcher.OLD_PACKAGE);
-        boolean htmlWritten = false;
+        Map<String, byte[]> pending = new HashMap<>(assetSwaps);
         CountingOutputStream counting = new CountingOutputStream(
                 new BufferedOutputStream(new FileOutputStream(out)));
         try (ZipInputStream zin = new ZipInputStream(new FileInputStream(in));
@@ -133,9 +183,8 @@ public class ApkMaker {
                 String name = e.getName();
                 if (name.startsWith("META-INF/")) continue; // old signature, dropped
                 byte[] data = readAll(zin);
-                if (name.equals(HTML_ENTRY)) {
-                    data = htmlBytes;
-                    htmlWritten = true;
+                if (pending.containsKey(name)) {
+                    data = pending.remove(name);
                 } else if (patchIdentity && name.equals(MANIFEST_ENTRY)) {
                     data = ApkPatcher.patchManifest(data, packageName, appLabel);
                 } else if (patchIdentity && name.equals(ARSC_ENTRY)) {
@@ -146,8 +195,9 @@ public class ApkMaker {
                 writeEntry(zout, counting, name, data, e.getMethod());
                 zin.closeEntry();
             }
-            if (!htmlWritten) {
-                writeEntry(zout, counting, HTML_ENTRY, htmlBytes, ZipEntry.DEFLATED);
+            for (Map.Entry<String, byte[]> extra : pending.entrySet()) {
+                writeEntry(zout, counting, extra.getKey(), extra.getValue(),
+                        ZipEntry.DEFLATED);
             }
         }
     }
@@ -176,27 +226,28 @@ public class ApkMaker {
         return map;
     }
 
-    /** Looks up the replacement bytes for a zip entry, tolerating the
-     *  version suffix aapt2 adds to density buckets inside the APK
-     *  (e.g. res/mipmap-mdpi-v4/ic_launcher.png). */
+    /** Canonical form of a mipmap entry name: strips the version suffix
+     *  aapt2 adds to density buckets inside the APK
+     *  (res/mipmap-mdpi-v4/ic_launcher.png -> res/mipmap-mdpi/ic_launcher.png).
+     *  Null when the entry is not a mipmap file. */
+    private static String canonicalIconEntry(String entryName) {
+        String prefix = "res/mipmap-";
+        if (!entryName.startsWith(prefix)) return null;
+        int slash = entryName.indexOf('/', prefix.length());
+        if (slash <= 0) return null;
+        String bucket = entryName.substring(prefix.length(), slash);
+        int v = bucket.lastIndexOf("-v");
+        if (v > 0) bucket = bucket.substring(0, v);
+        return prefix + bucket + entryName.substring(slash);
+    }
+
+    /** Looks up the replacement bytes for a zip entry (canonical or exact). */
     private static byte[] iconReplacementFor(Map<String, byte[]> map, String entryName) {
         if (map == null || map.isEmpty()) return null;
         byte[] hit = map.get(entryName);
         if (hit != null) return hit;
-        String prefix = "res/mipmap-";
-        if (entryName.startsWith(prefix)) {
-            int slash = entryName.indexOf('/', prefix.length());
-            if (slash > 0) {
-                String bucket = entryName.substring(prefix.length(), slash);
-                int v = bucket.lastIndexOf("-v");
-                if (v > 0) {
-                    String canonical = prefix + bucket.substring(0, v)
-                            + entryName.substring(slash);
-                    return map.get(canonical);
-                }
-            }
-        }
-        return null;
+        String canonical = canonicalIconEntry(entryName);
+        return canonical != null ? map.get(canonical) : null;
     }
 
     private static void writeEntry(ZipOutputStream zout, CountingOutputStream counting,
