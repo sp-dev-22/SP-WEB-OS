@@ -1,0 +1,220 @@
+<!DOCTYPE html>
+<html lang="hi">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Icon Maker — SP WEB OS</title>
+<style>
+  :root { --pink:#E91E63; --pink-dark:#C2185B; --line:#e5e5e5; }
+  * { box-sizing: border-box; }
+  body { margin:0; padding:14px; font-family: sans-serif; background:#fff; color:#222; }
+  h2 { margin:2px 0 4px; font-size:19px; color:var(--pink-dark); }
+  .hint { font-size:12px; color:#666; margin:0 0 10px; }
+  label.lbl { display:block; font-size:13px; font-weight:bold; margin:14px 0 6px; }
+  input[type="text"] { width:100%; padding:9px; font-size:16px; border:1px solid var(--line); border-radius:8px; }
+  select { width:100%; padding:9px; font-size:15px; border:1px solid var(--line); border-radius:8px; background:#fff; }
+  input[type="range"] { width:100%; }
+  input[type="color"] { width:56px; height:38px; border:1px solid var(--line); border-radius:8px; background:#fff; padding:2px; vertical-align:middle; }
+  .row { display:flex; align-items:center; gap:10px; flex-wrap:wrap; }
+  .swatches { display:flex; gap:8px; flex-wrap:wrap; }
+  .sw { width:32px; height:32px; border-radius:50%; border:2px solid #fff; box-shadow:0 0 0 1px #ccc; cursor:pointer; }
+  .radios { display:flex; gap:8px; }
+  .radios label { flex:1; text-align:center; padding:8px 4px; border:1.5px solid var(--line); border-radius:8px; font-size:14px; cursor:pointer; }
+  .radios input { display:none; }
+  .radios label.on { border-color:var(--pink); color:var(--pink-dark); background:#FCE4EC; font-weight:bold; }
+  .stage { text-align:center; margin-top:6px; }
+  #main { width:min(72vw, 280px); height:auto; border:1px solid var(--line); border-radius:10px; }
+  .previews { display:flex; gap:22px; justify-content:center; margin-top:10px; }
+  .pv { text-align:center; font-size:12px; color:#666; }
+  .pv canvas { width:92px; height:92px; display:block; margin:0 auto 4px; box-shadow:0 1px 5px rgba(0,0,0,.25); }
+  #pvRound { border-radius:24%; }
+  #pvCircle { border-radius:50%; }
+  .btns { margin-top:18px; display:flex; flex-direction:column; gap:10px; }
+  button.act { padding:13px; font-size:16px; border:none; border-radius:10px; cursor:pointer; }
+  #saveBtn { background:var(--pink); color:#fff; font-weight:bold; }
+  #clearBtn { background:#fff; color:var(--pink-dark); border:1.5px solid var(--pink); }
+  #done { text-align:center; color:#2E7D32; font-weight:bold; min-height:20px; margin-top:8px; font-size:14px; }
+  .chk { font-size:14px; }
+</style>
+</head>
+<body>
+<h2>🎨 App Icon बनाओ</h2>
+<p class="hint">अपना design बनाओ — यही icon बने हुए app के launcher पर दिखेगा। Preview में गोल और चौकोर, दोनों रूप देख लो।</p>
+
+<div class="stage">
+  <canvas id="main" width="512" height="512"></canvas>
+  <div class="previews">
+    <div class="pv"><canvas id="pvRound" width="184" height="184"></canvas>चौकोर (rounded)</div>
+    <div class="pv"><canvas id="pvCircle" width="184" height="184"></canvas>गोल (circle)</div>
+  </div>
+</div>
+
+<label class="lbl">Background रंग</label>
+<div class="row">
+  <input type="color" id="bgColor" value="#E91E63">
+  <div class="swatches" id="bgSwatches"></div>
+</div>
+
+<label class="lbl">Pattern</label>
+<select id="pattern">
+  <option value="none">कोई नहीं (सादा)</option>
+  <option value="dots">Dots (बिंदियाँ)</option>
+  <option value="circles">Circles / Rings (गोले)</option>
+  <option value="lines">Lines (धारियाँ)</option>
+  <option value="grid">Grid (जाली)</option>
+</select>
+<div class="row" style="margin-top:8px;">
+  <span style="font-size:13px;">Pattern रंग:</span>
+  <input type="color" id="patColor" value="#ffffff">
+  <span style="font-size:13px;">Pattern size:</span>
+</div>
+<input type="range" id="patSize" min="14" max="90" value="42">
+
+<label class="lbl">Icon पर text</label>
+<input type="text" id="iconText" value="W" maxlength="14" placeholder="जैसे: SP, Study, 📚">
+
+<div class="row" style="margin-top:8px;">
+  <span style="font-size:13px;">Text रंग:</span>
+  <input type="color" id="textColor" value="#ffffff">
+  <label class="chk"><input type="checkbox" id="boldText" checked> Bold</label>
+</div>
+<label class="lbl">Text size</label>
+<input type="range" id="textSize" min="40" max="380" value="230">
+
+<label class="lbl">Text की position</label>
+<div class="radios" id="posRadios">
+  <label data-pos="top"><input type="radio" name="pos" value="top">⬆ ऊपर</label>
+  <label data-pos="center" class="on"><input type="radio" name="pos" value="center" checked>⬤ बीच में</label>
+  <label data-pos="bottom"><input type="radio" name="pos" value="bottom">⬇ नीचे</label>
+</div>
+
+<div class="btns">
+  <button class="act" id="saveBtn">✅ यह icon इस्तेमाल करो</button>
+  <button class="act" id="clearBtn">↩️ Default icon</button>
+</div>
+<div id="done"></div>
+
+<script>
+(function () {
+  var S = 512;
+  var main = document.getElementById('main');
+  var ctx = main.getContext('2d');
+  var pvR = document.getElementById('pvRound').getContext('2d');
+  var pvC = document.getElementById('pvCircle').getContext('2d');
+
+  var $ = function (id) { return document.getElementById(id); };
+  var bgColor = $('bgColor'), patColor = $('patColor'), textColor = $('textColor');
+  var pattern = $('pattern'), patSize = $('patSize');
+  var iconText = $('iconText'), textSize = $('textSize'), boldText = $('boldText');
+
+  // Background colour swatches
+  var swatchCols = ['#E91E63', '#D81B60', '#1E88E5', '#43A047', '#FB8C00',
+                    '#8E24AA', '#E53935', '#00ACC1', '#37474F', '#FDD835'];
+  var swBox = $('bgSwatches');
+  swatchCols.forEach(function (c) {
+    var d = document.createElement('div');
+    d.className = 'sw'; d.style.background = c; d.title = c;
+    d.onclick = function () { bgColor.value = c; draw(); };
+    swBox.appendChild(d);
+  });
+
+  function currentPos() {
+    var r = document.querySelector('input[name="pos"]:checked');
+    return r ? r.value : 'center';
+  }
+  document.querySelectorAll('#posRadios label').forEach(function (lab) {
+    lab.addEventListener('click', function () {
+      document.querySelectorAll('#posRadios label').forEach(function (l) { l.classList.remove('on'); });
+      lab.classList.add('on');
+      lab.querySelector('input').checked = true;
+      draw();
+    });
+  });
+
+  function drawPattern() {
+    var kind = pattern.value;
+    if (kind === 'none') return;
+    var step = parseInt(patSize.value, 10) * 2;      // spacing
+    var sz = parseInt(patSize.value, 10);            // element size
+    ctx.fillStyle = patColor.value;
+    ctx.strokeStyle = patColor.value;
+    var x, y;
+    if (kind === 'dots') {
+      var r = Math.max(3, sz / 5);
+      for (y = step / 2; y < S; y += step) {
+        for (x = step / 2; x < S; x += step) {
+          ctx.beginPath(); ctx.arc(x, y, r, 0, Math.PI * 2); ctx.fill();
+        }
+      }
+    } else if (kind === 'circles') {
+      ctx.lineWidth = Math.max(3, sz / 8);
+      var rr = sz / 1.6;
+      for (y = step / 2; y < S + step; y += step) {
+        for (x = step / 2; x < S + step; x += step) {
+          ctx.beginPath(); ctx.arc(x, y, rr, 0, Math.PI * 2); ctx.stroke();
+        }
+      }
+    } else if (kind === 'lines') {
+      ctx.lineWidth = Math.max(4, sz / 5);
+      ctx.beginPath();
+      for (var d = -S; d < S * 2; d += step) {
+        ctx.moveTo(d, S + 8); ctx.lineTo(d + S, -8);
+      }
+      ctx.stroke();
+    } else if (kind === 'grid') {
+      ctx.lineWidth = Math.max(2, sz / 10);
+      ctx.beginPath();
+      for (x = step / 2; x < S; x += step) { ctx.moveTo(x, 0); ctx.lineTo(x, S); }
+      for (y = step / 2; y < S; y += step) { ctx.moveTo(0, y); ctx.lineTo(S, y); }
+      ctx.stroke();
+    }
+  }
+
+  function draw() {
+    ctx.clearRect(0, 0, S, S);
+    ctx.fillStyle = bgColor.value;
+    ctx.fillRect(0, 0, S, S);
+    drawPattern();
+    var t = iconText.value;
+    if (t) {
+      var size = parseInt(textSize.value, 10);
+      ctx.fillStyle = textColor.value;
+      ctx.font = (boldText.checked ? 'bold ' : '') + size + 'px sans-serif';
+      ctx.textAlign = 'center';
+      ctx.textBaseline = 'middle';
+      var pos = currentPos();
+      var y = pos === 'top' ? S * 0.22 : (pos === 'bottom' ? S * 0.78 : S * 0.52);
+      ctx.fillText(t, S / 2, y, S * 0.92);
+    }
+    pvR.drawImage(main, 0, 0, 184, 184);
+    pvC.drawImage(main, 0, 0, 184, 184);
+  }
+
+  [bgColor, patColor, textColor, pattern, patSize, iconText, textSize, boldText]
+    .forEach(function (el) {
+      el.addEventListener('input', draw);
+      el.addEventListener('change', draw);
+    });
+
+  $('saveBtn').onclick = function () {
+    if (window.IconBridge && IconBridge.saveIcon) {
+      IconBridge.saveIcon(main.toDataURL('image/png'));
+      $('done').textContent = '✓ Icon save हो गया — अब dialog बंद करके APK बनाओ।';
+    } else {
+      $('done').textContent = '⚠️ यह page app के अंदर ही काम करती है।';
+    }
+  };
+  $('clearBtn').onclick = function () {
+    if (window.IconBridge && IconBridge.clearIcon) {
+      IconBridge.clearIcon();
+      $('done').textContent = '↩️ Default icon (गुलाबी W) लगेगा।';
+    } else {
+      $('done').textContent = '⚠️ यह page app के अंदर ही काम करती है।';
+    }
+  };
+
+  draw();
+})();
+</script>
+</body>
+</html>
