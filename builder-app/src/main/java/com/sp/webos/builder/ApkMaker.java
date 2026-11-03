@@ -1,6 +1,8 @@
 package com.sp.webos.builder;
 
 import android.content.Context;
+import android.graphics.Bitmap;
+import android.graphics.BitmapFactory;
 
 import com.android.apksig.ApkSigner;
 
@@ -19,7 +21,9 @@ import java.security.cert.Certificate;
 import java.security.cert.X509Certificate;
 import java.util.ArrayList;
 import java.util.Collections;
+import java.util.HashMap;
 import java.util.List;
+import java.util.Map;
 import java.util.zip.CRC32;
 import java.util.zip.ZipEntry;
 import java.util.zip.ZipInputStream;
@@ -41,6 +45,8 @@ public class ApkMaker {
     private static final String HTML_ENTRY = "assets/index.html";
     private static final String MANIFEST_ENTRY = "AndroidManifest.xml";
     private static final String ARSC_ENTRY = "resources.arsc";
+    private static final String[] ICON_DENSITIES = {"mdpi", "hdpi", "xhdpi", "xxhdpi", "xxxhdpi"};
+    private static final int[] ICON_SIZES = {48, 72, 96, 144, 192};
 
     /** Counts bytes written so STORED entries can be 4-byte aligned. */
     private static class CountingOutputStream extends OutputStream {
@@ -57,6 +63,18 @@ public class ApkMaker {
 
     public static File buildApk(Context ctx, byte[] htmlBytes,
                                 String appLabel, String packageName) throws Exception {
+        return buildApk(ctx, htmlBytes, appLabel, packageName, null);
+    }
+
+    /**
+     * Same as above, plus an optional user-designed launcher icon: a
+     * 512x512 (or any square) master PNG. When given, the template's
+     * mipmap launcher icons are replaced with resized copies of it.
+     * When null, the template's default icons survive untouched.
+     */
+    public static File buildApk(Context ctx, byte[] htmlBytes,
+                                String appLabel, String packageName,
+                                byte[] iconPng) throws Exception {
         File workDir = new File(ctx.getCacheDir(), "apkbuild");
         //noinspection ResultOfMethodCallIgnored
         workDir.mkdirs();
@@ -65,7 +83,8 @@ public class ApkMaker {
         copyAsset(ctx, TEMPLATE_ASSET, template);
 
         File unsigned = new File(workDir, "unsigned.apk");
-        rewriteZip(template, unsigned, htmlBytes, appLabel, packageName);
+        rewriteZip(template, unsigned, htmlBytes, appLabel, packageName,
+                buildIconReplacements(iconPng));
 
         File outDir = ctx.getExternalFilesDir(null);
         if (outDir == null) outDir = ctx.getFilesDir();
@@ -100,7 +119,8 @@ public class ApkMaker {
      * requires for targetSdk 30+.
      */
     private static void rewriteZip(File in, File out, byte[] htmlBytes,
-                                   String appLabel, String packageName) throws IOException {
+                                   String appLabel, String packageName,
+                                   Map<String, byte[]> iconReplacements) throws IOException {
         boolean patchIdentity = packageName != null
                 && !packageName.equals(ApkPatcher.OLD_PACKAGE);
         boolean htmlWritten = false;
@@ -121,6 +141,8 @@ public class ApkMaker {
                 } else if (patchIdentity && name.equals(ARSC_ENTRY)) {
                     data = ApkPatcher.patchArscPackage(data, packageName);
                 }
+                byte[] iconData = iconReplacementFor(iconReplacements, name);
+                if (iconData != null) data = iconData;
                 writeEntry(zout, counting, name, data, e.getMethod());
                 zin.closeEntry();
             }
@@ -128,6 +150,53 @@ public class ApkMaker {
                 writeEntry(zout, counting, HTML_ENTRY, htmlBytes, ZipEntry.DEFLATED);
             }
         }
+    }
+
+    /**
+     * Builds the zip-entry -> PNG-bytes map for a user-designed icon: one
+     * resized copy of the master PNG per density bucket, used for both
+     * ic_launcher.png and ic_launcher_round.png.
+     */
+    private static Map<String, byte[]> buildIconReplacements(byte[] iconPng) {
+        Map<String, byte[]> map = new HashMap<>();
+        if (iconPng == null || iconPng.length == 0) return map;
+        Bitmap master = BitmapFactory.decodeByteArray(iconPng, 0, iconPng.length);
+        if (master == null) return map;
+        for (int i = 0; i < ICON_DENSITIES.length; i++) {
+            Bitmap scaled = Bitmap.createScaledBitmap(
+                    master, ICON_SIZES[i], ICON_SIZES[i], true);
+            ByteArrayOutputStream baos = new ByteArrayOutputStream();
+            scaled.compress(Bitmap.CompressFormat.PNG, 100, baos);
+            byte[] bytes = baos.toByteArray();
+            map.put("res/mipmap-" + ICON_DENSITIES[i] + "/ic_launcher.png", bytes);
+            map.put("res/mipmap-" + ICON_DENSITIES[i] + "/ic_launcher_round.png", bytes);
+            if (scaled != master) scaled.recycle();
+        }
+        master.recycle();
+        return map;
+    }
+
+    /** Looks up the replacement bytes for a zip entry, tolerating the
+     *  version suffix aapt2 adds to density buckets inside the APK
+     *  (e.g. res/mipmap-mdpi-v4/ic_launcher.png). */
+    private static byte[] iconReplacementFor(Map<String, byte[]> map, String entryName) {
+        if (map == null || map.isEmpty()) return null;
+        byte[] hit = map.get(entryName);
+        if (hit != null) return hit;
+        String prefix = "res/mipmap-";
+        if (entryName.startsWith(prefix)) {
+            int slash = entryName.indexOf('/', prefix.length());
+            if (slash > 0) {
+                String bucket = entryName.substring(prefix.length(), slash);
+                int v = bucket.lastIndexOf("-v");
+                if (v > 0) {
+                    String canonical = prefix + bucket.substring(0, v)
+                            + entryName.substring(slash);
+                    return map.get(canonical);
+                }
+            }
+        }
+        return null;
     }
 
     private static void writeEntry(ZipOutputStream zout, CountingOutputStream counting,
