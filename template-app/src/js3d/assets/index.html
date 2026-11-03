@@ -1,0 +1,72 @@
+<!DOCTYPE html>
+<html lang="hi">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no">
+<title>3D Demo — SP WEB OS</title>
+<style>
+  html, body { margin:0; padding:0; overflow:hidden; background:#101828; height:100%; }
+  canvas { display:block; }
+  #msg {
+    position:fixed; left:12px; right:12px; bottom:12px; z-index:5;
+    background:rgba(29,41,57,.92); color:#fff; border-radius:12px;
+    padding:12px 14px; font-family:sans-serif; font-size:14px; line-height:1.5;
+  }
+  #msg b { color:#FFD140; }
+</style>
+</head>
+<body>
+<div id="msg"><b>Three.js chal raha hai 🎮</b><br>
+Ye demo page hai — SP WEB OS me apni 3D / game wali HTML file chuno.
+<code>three.min.js</code> is template ke andar pehle se hai; apni file me
+<code>&lt;script src="three.min.js"&gt;&lt;/script&gt;</code> likhkar seedha istemaal karo.</div>
+
+<script src="three.min.js"></script>
+<script>
+(function () {
+  var scene = new THREE.Scene();
+  scene.background = new THREE.Color(0x101828);
+
+  var camera = new THREE.PerspectiveCamera(65, innerWidth / innerHeight, 0.1, 100);
+  camera.position.set(0, 0.6, 4.2);
+
+  var renderer = new THREE.WebGLRenderer({ antialias: true });
+  renderer.setPixelRatio(Math.min(window.devicePixelRatio || 1, 2));
+  renderer.setSize(innerWidth, innerHeight);
+  document.body.appendChild(renderer.domElement);
+
+  var cube = new THREE.Mesh(
+    new THREE.BoxGeometry(1.7, 1.7, 1.7),
+    new THREE.MeshBasicMaterial({ color: 0xE91E63 })
+  );
+  var edges = new THREE.LineSegments(
+    new THREE.EdgesGeometry(cube.geometry),
+    new THREE.LineBasicMaterial({ color: 0xFFD140 })
+  );
+  cube.add(edges);
+  scene.add(cube);
+
+  var ring = new THREE.Mesh(
+    new THREE.TorusGeometry(1.7, 0.05, 10, 60),
+    new THREE.MeshBasicMaterial({ color: 0x4FC3F7 })
+  );
+  ring.rotation.x = Math.PI / 2.4;
+  scene.add(ring);
+
+  window.addEventListener('resize', function () {
+    camera.aspect = innerWidth / innerHeight;
+    camera.updateProjectionMatrix();
+    renderer.setSize(innerWidth, innerHeight);
+  });
+
+  (function animate() {
+    requestAnimationFrame(animate);
+    cube.rotation.x += 0.012;
+    cube.rotation.y += 0.016;
+    ring.rotation.z += 0.008;
+    renderer.render(scene, camera);
+  })();
+})();
+</script>
+</body>
+</html>
