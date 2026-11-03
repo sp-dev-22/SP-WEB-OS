@@ -6,6 +6,8 @@ import android.app.AlertDialog;
 import android.content.ContentValues;
 import android.content.Intent;
 import android.content.pm.PackageInstaller;
+import android.graphics.Bitmap;
+import android.graphics.BitmapFactory;
 import android.content.pm.PackageManager;
 import android.net.Uri;
 import android.os.Build;
@@ -16,8 +18,12 @@ import android.provider.Settings;
 import android.text.Editable;
 import android.text.TextWatcher;
 import android.view.Gravity;
+import android.webkit.JavascriptInterface;
+import android.webkit.WebSettings;
+import android.webkit.WebView;
 import android.widget.Button;
 import android.widget.EditText;
+import android.widget.ImageView;
 import android.widget.LinearLayout;
 import android.widget.ScrollView;
 import android.widget.TextView;
@@ -56,6 +62,8 @@ public class MainActivity extends Activity {
     private EditText codeBox;
     private EditText nameBox;
     private Button installBtn;
+    private ImageView iconPreview;
+    private TextView iconStatus;
     private byte[] pickedHtml;
     private String pickedName;
     private File builtApk;
@@ -129,6 +137,24 @@ public class MainActivity extends Activity {
             }
             @Override public void afterTextChanged(Editable s) { }
         });
+
+        Button iconBtn = new Button(this);
+        iconBtn.setText("🎨 App Icon Banao");
+        iconBtn.setOnClickListener(v -> openIconMaker());
+        root.addView(iconBtn);
+
+        LinearLayout iconRow = new LinearLayout(this);
+        iconRow.setOrientation(LinearLayout.HORIZONTAL);
+        iconRow.setGravity(Gravity.CENTER_VERTICAL);
+        iconPreview = new ImageView(this);
+        int iconPx = (int) (52 * getResources().getDisplayMetrics().density);
+        iconRow.addView(iconPreview, new LinearLayout.LayoutParams(iconPx, iconPx));
+        iconStatus = new TextView(this);
+        iconStatus.setTextSize(12);
+        iconStatus.setPadding((int) (10 * getResources().getDisplayMetrics().density), 0, 0, 0);
+        iconRow.addView(iconStatus);
+        root.addView(iconRow);
+        refreshIconPreview();
 
         Button buildBtn = new Button(this);
         buildBtn.setText("🚀 APK Banao");
@@ -354,6 +380,91 @@ public class MainActivity extends Activity {
         }
     }
 
+    // ---------------------------------------------------------- custom app icon
+
+    private File customIconFile() {
+        return new File(getFilesDir(), "custom_icon.png");
+    }
+
+    private void refreshIconPreview() {
+        if (iconPreview == null || iconStatus == null) return;
+        File f = customIconFile();
+        Bitmap bmp = f.exists() ? BitmapFactory.decodeFile(f.getAbsolutePath()) : null;
+        if (bmp != null) {
+            iconPreview.setImageBitmap(bmp);
+            iconStatus.setText("Custom icon \u2713 \u2014 agle APK me yahi lagega.\nBadalna ho to phir se 'App Icon Banao' dabao.");
+        } else {
+            iconPreview.setImageBitmap(null);
+            iconStatus.setText("Abhi default icon lagega (gulabi W).\nApna design banana ho to '\uD83C\uDFA8 App Icon Banao' dabao.");
+        }
+    }
+
+    /** Icon Maker (assets/icon_maker.html) ko ek dialog ke andar kholta hai. */
+    private void openIconMaker() {
+        WebView wv = new WebView(this);
+        WebSettings ws = wv.getSettings();
+        ws.setJavaScriptEnabled(true);
+        ws.setDomStorageEnabled(true);
+        wv.addJavascriptInterface(new IconBridge(), "IconBridge");
+        int h = (int) (580 * getResources().getDisplayMetrics().density);
+        wv.setLayoutParams(new LinearLayout.LayoutParams(
+                LinearLayout.LayoutParams.MATCH_PARENT, h));
+        wv.loadUrl("file:///android_asset/icon_maker.html");
+        new AlertDialog.Builder(this)
+                .setTitle("\uD83C\uDFA8 App Icon Banao")
+                .setView(wv)
+                .setNegativeButton("Band Karo", null)
+                .show();
+    }
+
+    /** icon_maker.html ka JavaScript bridge: design kiya hua icon save/clear. */
+    public class IconBridge {
+        @JavascriptInterface
+        public void saveIcon(String dataUrl) {
+            try {
+                int comma = dataUrl.indexOf(',');
+                byte[] bytes = android.util.Base64.decode(
+                        dataUrl.substring(comma + 1), android.util.Base64.DEFAULT);
+                try (OutputStream out = new FileOutputStream(customIconFile())) {
+                    out.write(bytes);
+                }
+                runOnUiThread(() -> {
+                    Toast.makeText(MainActivity.this,
+                            "\uD83C\uDFA8 Icon save ho gaya \u2713", Toast.LENGTH_SHORT).show();
+                    refreshIconPreview();
+                });
+            } catch (Exception e) {
+                runOnUiThread(() -> Toast.makeText(MainActivity.this,
+                        "Icon save nahi hua: " + e.getMessage(), Toast.LENGTH_LONG).show());
+            }
+        }
+
+        @JavascriptInterface
+        public void clearIcon() {
+            //noinspection ResultOfMethodCallIgnored
+            customIconFile().delete();
+            runOnUiThread(() -> {
+                Toast.makeText(MainActivity.this,
+                        "\u21A9 Default icon lagega", Toast.LENGTH_SHORT).show();
+                refreshIconPreview();
+            });
+        }
+    }
+
+    private byte[] readCustomIcon() {
+        File f = customIconFile();
+        if (!f.exists()) return null;
+        try (InputStream in = new FileInputStream(f)) {
+            ByteArrayOutputStream baos = new ByteArrayOutputStream();
+            byte[] buf = new byte[8192];
+            int n;
+            while ((n = in.read(buf)) != -1) baos.write(buf, 0, n);
+            return baos.toByteArray();
+        } catch (Exception e) {
+            return null;
+        }
+    }
+
     // ---------------------------------------------------------- pick / build / install
 
     @Override
@@ -400,11 +511,12 @@ public class MainActivity extends Activity {
         String libBase = label != null ? label
                 : (pickedName != null ? pickedName.replaceAll("\\.html?$", "") : "pasted-code");
         saveToLibrary(html, libBase);
+        final byte[] iconBytes = readCustomIcon();
         setStatus("APK ban raha hai... ⏳");
         installBtn.setEnabled(false);
         new Thread(() -> {
             try {
-                builtApk = ApkMaker.buildApk(this, html, label, pkg);
+                builtApk = ApkMaker.buildApk(this, html, label, pkg, iconBytes);
                 builtLabel = label == null ? "Web App" : label;
                 builtPackage = pkg == null ? ApkPatcher.OLD_PACKAGE : pkg;
                 String dl = copyToDownloads(builtApk, builtLabel);
@@ -413,6 +525,7 @@ public class MainActivity extends Activity {
                         + (dl != null ? "\n📥 Downloads me copy: " + dl
                                       : "\n(Downloads copy nahi ho paya — APK upar wale path par hai)")
                         + "\n📚 HTML library me save ho gaya."
+                        + (iconBytes != null ? "\n🎨 Custom icon lagaya gaya." : "")
                         + "\nAb 'Install Karo' dabao.");
                 runOnUiThread(() -> installBtn.setEnabled(true));
             } catch (Exception e) {
