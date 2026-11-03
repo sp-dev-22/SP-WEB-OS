@@ -43,3 +43,33 @@ def decodeLauncherIcons = tasks.register('decodeLauncherIcons') {
     }
 }
 tasks.named('preBuild') { dependsOn(decodeLauncherIcons) }
+
+// ---------------------------------------------------------------------------
+// v5.1: chaar template flavors ko builder ke assets me pack karo.
+// CI workflow pehle :template-app:assembleDebug chalata hai (saare flavors),
+// isliye unke APKs ../template-app/build/outputs/apk/<flavor>/debug/ me
+// taiyaar milte hain. Unhi ko yahan template_<kind>.apk naam se copy karke
+// ek generated assets dir me rakha jata hai, jo main assets sourceSet me
+// shamil hai. Local / standalone build me files na milein to Copy task
+// chup chaap khaali reh jata hai — build fail nahi hota (us case me purani
+// template.apk, jo workflow src/main/assets me dalta hai, istemaal hogi).
+def templateApksDir = layout.buildDirectory.dir('generated/template-apks')
+def embedTemplateApks = tasks.register('embedTemplateApks', Copy) {
+    ['default', 'js3d', 'url', 'full'].each { kind ->
+        from("../template-app/build/outputs/apk/${kind}/debug") {
+            include "template-app-${kind}-debug.apk"
+            rename { "template_${kind}.apk" }
+        }
+    }
+    into templateApksDir
+}
+android {
+    sourceSets {
+        main {
+            assets.srcDirs = ['src/main/assets', templateApksDir.get().asFile]
+        }
+    }
+}
+tasks.named('preBuild') { dependsOn(embedTemplateApks) }
+tasks.matching { it.name.startsWith('merge') && it.name.endsWith('Assets') }
+        .configureEach { dependsOn(embedTemplateApks) }
