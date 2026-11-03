@@ -167,6 +167,15 @@ public class MainActivity extends Activity {
     private String builtLabel;
     private String builtPackage;
 
+    // Activity ka content frame (charon tab isi ke andar rehte hain).
+    // Icon Maker page bhi isi frame par overlay hokar khulta hai (v5.3.1).
+    private FrameLayout contentFrame;
+
+    // Icon Maker page (v5.3.1): khula ho to page + uska WebView in
+    // fields me rehte hain, band ho to dono null.
+    private View iconMakerPage;
+    private WebView iconMakerWebView;
+
     // Tabs
     private static final int TAB_HOME = 0;
     private static final int TAB_HTML = 1;
@@ -285,6 +294,7 @@ public class MainActivity extends Activity {
         root.setBackgroundColor(PAGE_BG);
 
         FrameLayout content = new FrameLayout(this);
+        contentFrame = content;
         root.addView(content, new LinearLayout.LayoutParams(
                 LinearLayout.LayoutParams.MATCH_PARENT, 0, 1f));
 
@@ -351,7 +361,23 @@ public class MainActivity extends Activity {
         outState.putInt("sp_tab", currentTab);
     }
 
+    /** Android Back button: Icon Maker page khula ho to pehle wahi band
+     *  hota hai; warna default behaviour. (Is app me iske alawa koi
+     *  custom Back handling hai hi nahi — Help Center waghera apne
+     *  Dialog hain, un par Android khud Back sambhalta hai.) */
+    @Override
+    public void onBackPressed() {
+        if (iconMakerPage != null) {
+            closeIconMaker();
+            return;
+        }
+        super.onBackPressed();
+    }
+
     private void showTab(int idx) {
+        // Icon Maker page khula ho to tab badalne se pehle use band karo,
+        // warna page naye tab ke upar chipka reh jayega.
+        if (iconMakerPage != null) closeIconMaker();
         currentTab = idx;
         for (int i = 0; i < tabViews.length; i++) {
             tabViews[i].setVisibility(i == idx ? View.VISIBLE : View.GONE);
@@ -708,11 +734,12 @@ public class MainActivity extends Activity {
                 + "naam aur icon do → '🚀 APK Banao' dabao → '📲 Install Karo' se "
                 + "install karo. Bas, app taiyaar!");
         helpQa(col, "Q2. Apna icon kaise lagayein?",
-                "'🎨 App Icon Banao' dabao → background rang aur pattern chuno "
-                + "(13 patterns hain) → '✅ यह icon इस्तेमाल करो' dabakar dialog "
-                + "band karo → phir APK banao. Wahi design launcher par icon "
-                + "banega. Purana bana hua icon lagana ho to dialog ke neeche "
-                + "'🖼️ Saved Icons से चुनो' dabao.");
+                "'🎨 App Icon Banao' dabao → poori screen par icon page "
+                + "khulega → background rang aur pattern chuno (13 patterns "
+                + "hain) → '✅ यह icon इस्तेमाल करो' dabao → '⬅ वापस' dabakar "
+                + "Home par aao → phir APK banao. Wahi design launcher par "
+                + "icon banega. Purana bana hua icon lagana ho to icon page "
+                + "ke neeche '🖼️ Saved Icons से चुनो' dabao.");
         helpQa(col, "Q3. App Type aur Features kya hain?",
                 "Do Type hain: 📄 HTML App (single-file HTML se app) aur 🌐 URL "
                 + "App (website ke URL se app). Type ke neeche ✨ Features ki "
@@ -1923,44 +1950,68 @@ public class MainActivity extends Activity {
         }
     }
 
-    /** Icon Maker (assets/icon_maker.html) ko ek dialog ke andar kholta hai.
-     *  Dialog ka content ek vertical layout hai — upar WebView (weight 1)
-     *  aur neeche ek button row: Saved Icons picker + Band Karo.
+    /** Icon Maker (assets/icon_maker.html) — v5.3.1 HOTFIX: ab yeh koi
+     *  dialog NAHI hai; activity ke andar ek FULL-SCREEN PAGE hai.
      *
-     *  v5.3 FIX (v5.2 ka designer-gaayab bug): v5.2 me wrap layout ko
-     *  setLayoutParams se 580dp ki FIXED height di gayi thi aur designer
-     *  WebView uske andar height 0 + weight 1 par tha. Lekin
-     *  AlertDialog.setView() root view ke apne LayoutParams ki izzat
-     *  NAHI karta — woh view ko apne internal panel me MATCH_PARENT
-     *  wale generated params ke saath daalta hai aur dialog ko
-     *  WRAP_CONTENT naapta hai. Wrap-content naap me bantware ke liye
-     *  koi pakki height hoti hi nahi, isliye weight wala WebView 0px
-     *  par sikud gaya: sirf neeche wali (wrap-content) button row
-     *  dikhti thi, designer loaded hote hue bhi invisible tha.
-     *  Pakka ilaaj: wrap par koi fixed height NA lagao; dialog show
-     *  hone ke BAAD window ko definite size do (poori chaudi x screen
-     *  ka ~85% unchaai) — tab root ki height pakki hoti hai aur
-     *  weight-1 WebView ko sahi jagah milti hai. */
+     *  Kyun: v5.2 me designer WebView dialog ke andar height 0 + weight 1
+     *  par sikud gaya tha (sirf neeche wali button row dikhti thi).
+     *  v5.3 me dialog window ko show() ke baad ~85% height di gayi, lekin
+     *  user ke Infinix (Android 12 Go) par woh ilaaj bhi kaam nahi kiya —
+     *  device par wahi symptom wapas aaya. Isliye ab dialog-measurement
+     *  ki koi aur variation NAHI: page ko activity ke content frame me
+     *  MATCH_PARENT x MATCH_PARENT joda jata hai. Activity-level layout
+     *  ki height pakki (definite) hoti hai, isliye weight-1 WebView ko
+     *  asli height milti hi hai — designer ab chhup hi nahi sakta.
+     *
+     *  Page ki banawat (upar se neeche): header row (title + "⬅ वापस"),
+     *  designer WebView (weight 1), aur purani wali neeche ki button row
+     *  (Saved Icons picker + "✖ बंद करो"). Page ke neeche Home tab waisa
+     *  ka waisa rehta hai — page band hote hi wohi dikhta hai. */
     private void openIconMaker() {
+        closeIconMaker(); // pehle se khula ho to use band karke fresh banao
+
+        LinearLayout page = new LinearLayout(this);
+        page.setOrientation(LinearLayout.VERTICAL);
+        page.setBackgroundColor(PAGE_BG);
+        page.setPadding(dp(16), dp(16), dp(16), dp(16));
+        // Page content frame ko poora dhakta hai; khaali jagah ke tap
+        // neeche wale tab content tak na jayein, isliye clickable.
+        page.setClickable(true);
+
+        LinearLayout header = new LinearLayout(this);
+        header.setOrientation(LinearLayout.HORIZONTAL);
+        header.setGravity(Gravity.CENTER_VERTICAL);
+        header.addView(heading("🎨 App Icon Banao", 20),
+                new LinearLayout.LayoutParams(0,
+                        LinearLayout.LayoutParams.WRAP_CONTENT, 1f));
+        Button backBtn = new Button(this);
+        backBtn.setText("⬅ वापस");
+        styleSmall(backBtn);
+        backBtn.setTextColor(PINK_TEXT);
+        backBtn.setOnClickListener(v -> closeIconMaker());
+        header.addView(backBtn);
+        page.addView(header, new LinearLayout.LayoutParams(
+                LinearLayout.LayoutParams.MATCH_PARENT,
+                LinearLayout.LayoutParams.WRAP_CONTENT));
+
         WebView wv = new WebView(this);
         WebSettings ws = wv.getSettings();
         ws.setJavaScriptEnabled(true);
         ws.setDomStorageEnabled(true);
         wv.addJavascriptInterface(new IconBridge(), "IconBridge");
-        // Keyboard fix (v5.1): WebView ko touch focus milna chahiye, warna
-        // dialog ke andar text box par tap karne se keyboard nahi khulta.
+        // Keyboard ke liye (v5.1 wala sabak): WebView ko touch focus
+        // milna chahiye, warna andar tap karne par keyboard nahi khulta.
         wv.setFocusable(true);
         wv.setFocusableInTouchMode(true);
         wv.loadUrl("file:///android_asset/icon_maker.html");
-
-        LinearLayout wrap = new LinearLayout(this);
-        wrap.setOrientation(LinearLayout.VERTICAL);
-        wrap.addView(wv, new LinearLayout.LayoutParams(
-                LinearLayout.LayoutParams.MATCH_PARENT, 0, 1f));
+        LinearLayout.LayoutParams wvLp = new LinearLayout.LayoutParams(
+                LinearLayout.LayoutParams.MATCH_PARENT, 0, 1f);
+        wvLp.topMargin = dp(10);
+        page.addView(wv, wvLp);
 
         LinearLayout btnRow = new LinearLayout(this);
         btnRow.setOrientation(LinearLayout.HORIZONTAL);
-        btnRow.setPadding(dp(10), dp(8), dp(10), dp(10));
+        btnRow.setPadding(0, dp(10), 0, 0);
         Button savedBtn = new Button(this);
         savedBtn.setText("🖼️ Saved Icons से चुनो");
         styleSmall(savedBtn);
@@ -1974,32 +2025,36 @@ public class MainActivity extends Activity {
                 LinearLayout.LayoutParams.WRAP_CONTENT, 1f);
         half2.leftMargin = dp(8);
         btnRow.addView(closeBtn, half2);
-        wrap.addView(btnRow, new LinearLayout.LayoutParams(
+        page.addView(btnRow, new LinearLayout.LayoutParams(
                 LinearLayout.LayoutParams.MATCH_PARENT,
                 LinearLayout.LayoutParams.WRAP_CONTENT));
 
-        final AlertDialog dialog = new AlertDialog.Builder(this)
-                .setTitle("🎨 App Icon Banao")
-                .setView(wrap)
-                .create();
-        closeBtn.setOnClickListener(v -> dialog.dismiss());
-        savedBtn.setOnClickListener(v -> showSavedIconsPicker(dialog));
-        dialog.show();
-        if (dialog.getWindow() != null) {
-            // ASAL FIX: window ko definite size do — poori chaudi aur
-            // screen ka ~85% unchaai. Isi se WebView (weight 1) ko
-            // pakki height milti hai aur designer poora dikhta hai.
-            int wpx = getResources().getDisplayMetrics().widthPixels;
-            int hpx = (int) (getResources().getDisplayMetrics().heightPixels * 0.85);
-            dialog.getWindow().setLayout(wpx, hpx);
-            // Dialog window ko IME (keyboard) allow karna bhi zaroori hai —
-            // SOFT_INPUT_ADJUST_RESIZE ke bina WebView ke input focus to le
-            // lete hain, lekin keyboard upar nahi aata.
-            dialog.getWindow().setSoftInputMode(
-                    WindowManager.LayoutParams.SOFT_INPUT_ADJUST_RESIZE);
-        }
+        savedBtn.setOnClickListener(v -> showSavedIconsPicker());
+        closeBtn.setOnClickListener(v -> closeIconMaker());
+
+        iconMakerPage = page;
+        iconMakerWebView = wv;
+        contentFrame.addView(page, new FrameLayout.LayoutParams(
+                FrameLayout.LayoutParams.MATCH_PARENT,
+                FrameLayout.LayoutParams.MATCH_PARENT));
         wv.requestFocus();
         wv.requestFocusFromTouch();
+    }
+
+    /** Icon Maker page band karta hai: WebView saaf karke page view
+     *  content frame se hata deta hai — neeche Home tab waisa ka waisa
+     *  dikhne lagta hai — aur icon preview tazaa kar deta hai. Page
+     *  khula hi na ho to kuch nahi hota. */
+    private void closeIconMaker() {
+        if (iconMakerPage == null) return;
+        if (iconMakerWebView != null) {
+            iconMakerWebView.stopLoading();
+            iconMakerWebView.destroy();
+            iconMakerWebView = null;
+        }
+        contentFrame.removeView(iconMakerPage);
+        iconMakerPage = null;
+        refreshIconPreview();
     }
 
     /** icon_maker.html ka JavaScript bridge: design kiya hua icon save/clear. */
@@ -2126,7 +2181,7 @@ public class MainActivity extends Activity {
     /** Saved Icons picker kholta hai: Downloads me bane hue apps ke
      *  icon.png ki list. Kisi icon par tap = wohi is build ka custom
      *  icon ban jata hai (cache wali file me jaakar). */
-    private void showSavedIconsPicker(final Dialog makerDialog) {
+    private void showSavedIconsPicker() {
         final LinearLayout listBox = new LinearLayout(this);
         listBox.setOrientation(LinearLayout.VERTICAL);
         ScrollView scroll = new ScrollView(this);
@@ -2136,13 +2191,12 @@ public class MainActivity extends Activity {
                 .setView(scroll)
                 .setNegativeButton("✖ बंद करो", null)
                 .create();
-        fillSavedIconsList(listBox, picker, makerDialog);
+        fillSavedIconsList(listBox, picker);
         picker.show();
     }
 
     private void fillSavedIconsList(final LinearLayout listBox,
-                                    final Dialog picker,
-                                    final Dialog makerDialog) {
+                                    final Dialog picker) {
         try {
             listBox.removeAllViews();
             List<SavedIconItem> icons = querySavedIcons();
@@ -2154,7 +2208,7 @@ public class MainActivity extends Activity {
                 return;
             }
             for (final SavedIconItem it : icons) {
-                listBox.addView(savedIconRow(it, picker, makerDialog, listBox), lp(6));
+                listBox.addView(savedIconRow(it, picker, listBox), lp(6));
             }
         } catch (Exception e) {
             try {
@@ -2166,7 +2220,6 @@ public class MainActivity extends Activity {
     }
 
     private LinearLayout savedIconRow(final SavedIconItem it, final Dialog picker,
-                                      final Dialog makerDialog,
                                       final LinearLayout listBox) {
         LinearLayout row = new LinearLayout(this);
         row.setOrientation(LinearLayout.HORIZONTAL);
@@ -2201,20 +2254,21 @@ public class MainActivity extends Activity {
         del.setText("🗑");
         styleSmall(del);
         del.setOnClickListener(v ->
-                confirmDeleteSavedIcon(it, listBox, picker, makerDialog));
+                confirmDeleteSavedIcon(it, listBox, picker));
         row.addView(del);
 
-        row.setOnClickListener(v -> useSavedIcon(it, picker, makerDialog));
+        row.setOnClickListener(v -> useSavedIcon(it, picker));
         row.setOnLongClickListener(v -> {
-            confirmDeleteSavedIcon(it, listBox, picker, makerDialog);
+            confirmDeleteSavedIcon(it, listBox, picker);
             return true;
         });
         return row;
     }
 
-    /** Chuna hua saved icon cache wali custom-icon file me daal deta hai —
-     *  uske baad purana preview/build flow apne aap chal padta hai. */
-    private void useSavedIcon(SavedIconItem it, Dialog picker, Dialog makerDialog) {
+    /** Chuna hua saved icon cache wali custom-icon file me daal deta hai;
+     *  phir picker band, Icon Maker page band, Home par wapas — aur
+     *  preview tazaa (closeIconMaker khud bhi kar deta hai). */
+    private void useSavedIcon(SavedIconItem it, Dialog picker) {
         try {
             byte[] bytes = readSavedIconBytes(it);
             try (OutputStream out = new FileOutputStream(customIconFile())) {
@@ -2225,7 +2279,7 @@ public class MainActivity extends Activity {
                     + (it.appName.isEmpty() ? "SP WEB OS" : it.appName),
                     Toast.LENGTH_SHORT).show();
             if (picker != null) picker.dismiss();
-            if (makerDialog != null) makerDialog.dismiss();
+            closeIconMaker();
         } catch (Exception e) {
             Toast.makeText(this, "Icon load nahi ho paya: " + e.getMessage(),
                     Toast.LENGTH_LONG).show();
@@ -2234,8 +2288,7 @@ public class MainActivity extends Activity {
 
     private void confirmDeleteSavedIcon(final SavedIconItem it,
                                         final LinearLayout listBox,
-                                        final Dialog picker,
-                                        final Dialog makerDialog) {
+                                        final Dialog picker) {
         new AlertDialog.Builder(this)
                 .setTitle("🗑️ Icon delete karo?")
                 .setMessage((it.appName.isEmpty() ? "SP WEB OS" : it.appName)
@@ -2270,7 +2323,7 @@ public class MainActivity extends Activity {
                     }
                     Toast.makeText(this, gone ? "Delete ho gaya 🗑️" : "Delete nahi ho paya",
                             Toast.LENGTH_SHORT).show();
-                    fillSavedIconsList(listBox, picker, makerDialog);
+                    fillSavedIconsList(listBox, picker);
                 })
                 .setNegativeButton("Cancel", null)
                 .show();
