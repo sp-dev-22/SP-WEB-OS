@@ -7,11 +7,13 @@ import android.app.RecoverableSecurityException;
 import android.content.ContentUris;
 import android.content.ContentValues;
 import android.content.Intent;
+import android.content.SharedPreferences;
 import android.content.pm.PackageInstaller;
 import android.database.Cursor;
 import android.graphics.Bitmap;
 import android.graphics.BitmapFactory;
 import android.graphics.Typeface;
+import android.graphics.drawable.ColorDrawable;
 import android.graphics.drawable.GradientDrawable;
 import android.content.pm.PackageManager;
 import android.net.Uri;
@@ -23,6 +25,7 @@ import android.provider.Settings;
 import android.text.Editable;
 import android.text.TextWatcher;
 import android.view.Gravity;
+import android.view.Window;
 import android.view.View;
 import android.webkit.JavascriptInterface;
 import android.webkit.WebSettings;
@@ -33,6 +36,7 @@ import android.widget.FrameLayout;
 import android.widget.ImageView;
 import android.widget.LinearLayout;
 import android.widget.ScrollView;
+import android.widget.Switch;
 import android.widget.TextView;
 import android.widget.Toast;
 
@@ -70,16 +74,53 @@ public class MainActivity extends Activity {
     private static final int REQ_APK_DELETE = 101;
     private static final String INSTALL_ACTION = "com.sp.webos.INSTALL_RESULT";
 
-    // Minimal pink-accent palette
+    // Minimal pink-accent palette. PINK brand accent dono theme me same
+    // rehta hai; baaki rang instance fields hain taaki onCreate me dark-mode
+    // ki values bhari ja saken (neeche loadTheme dekho). Default = light.
     private static final int PINK = 0xFFE91E63;
     private static final int PINK_DARK = 0xFFC2185B;
-    private static final int DARK_TEXT = 0xFF212121;
-    private static final int GREY_TEXT = 0xFF616161;
-    private static final int FAINT_TEXT = 0xFF9E9E9E;
-    private static final int PAGE_BG = 0xFFFAFAFA;
-    private static final int CARD_BG = 0xFFFFFFFF;
-    private static final int BORDER = 0xFFE0E0E0;
     private static final int RED = 0xFFD32F2F;
+
+    private static final String PREFS_NAME = "sp_web_os_prefs";
+    private static final String PREF_DARK_MODE = "dark_mode";
+
+    private boolean darkMode;
+    private int DARK_TEXT = 0xFF212121;   // mukhya text
+    private int GREY_TEXT = 0xFF616161;   // halka text / meta
+    private int FAINT_TEXT = 0xFF9E9E9E;  // hint text
+    private int PAGE_BG = 0xFFFAFAFA;     // page background
+    private int CARD_BG = 0xFFFFFFFF;     // cards / rows / inputs / tab bar
+    private int BORDER = 0xFFE0E0E0;      // borders / divider
+    private int PINK_TEXT = PINK_DARK;    // headings + pink text (dark me PINK)
+
+    /** Saved dark-mode preference padhta hai aur agar ON ho to palette ki
+     *  dark values bhar deta hai. onCreate me UI banne se pehle call hota hai. */
+    private void loadTheme() {
+        SharedPreferences prefs = getSharedPreferences(PREFS_NAME, MODE_PRIVATE);
+        darkMode = prefs.getBoolean(PREF_DARK_MODE, false);
+        if (darkMode) {
+            DARK_TEXT = 0xFFF5F5F5;
+            GREY_TEXT = 0xFFB0B0B0;
+            FAINT_TEXT = 0xFF8A8A8A;
+            PAGE_BG = 0xFF121212;
+            CARD_BG = 0xFF1E1E1E;
+            BORDER = 0xFF333333;
+            PINK_TEXT = PINK; // gehre bg par C2185B dhundhla padta hai
+        }
+    }
+
+    /** Status bar ka rang theme se milata hai + window background, taaki
+     *  dark mode me kahin safed jhalak na dikhe. Dono theme me status bar
+     *  gehra rang (pink / kala) hai, isliye icons safed hi rahenge —
+     *  LIGHT_STATUS_BAR flag (kaale icons wala) band rakha jata hai. */
+    private void applyWindowTheme() {
+        Window w = getWindow();
+        w.setStatusBarColor(darkMode ? PAGE_BG : PINK);
+        w.setBackgroundDrawable(new ColorDrawable(PAGE_BG));
+        View decor = w.getDecorView();
+        decor.setSystemUiVisibility(
+                decor.getSystemUiVisibility() & ~View.SYSTEM_UI_FLAG_LIGHT_STATUS_BAR);
+    }
 
     private TextView status;
     private TextView packagePreview;
@@ -146,7 +187,7 @@ public class MainActivity extends Activity {
 
     private void styleOutline(Button b) {
         b.setBackground(roundedBg(CARD_BG, 10, PINK));
-        b.setTextColor(PINK_DARK);
+        b.setTextColor(PINK_TEXT);
         b.setAllCaps(false);
         b.setTextSize(14);
         b.setPadding(dp(12), dp(10), dp(12), dp(10));
@@ -175,7 +216,7 @@ public class MainActivity extends Activity {
         TextView t = new TextView(this);
         t.setText(text);
         t.setTextSize(sizeSp);
-        t.setTextColor(PINK_DARK);
+        t.setTextColor(PINK_TEXT);
         t.setTypeface(null, Typeface.BOLD);
         return t;
     }
@@ -204,6 +245,8 @@ public class MainActivity extends Activity {
     @Override
     protected void onCreate(Bundle savedInstanceState) {
         super.onCreate(savedInstanceState);
+        loadTheme();
+        applyWindowTheme();
 
         LinearLayout root = new LinearLayout(this);
         root.setOrientation(LinearLayout.VERTICAL);
@@ -261,7 +304,19 @@ public class MainActivity extends Activity {
         }
 
         setContentView(root);
-        showTab(TAB_HOME);
+        int startTab = TAB_HOME;
+        if (savedInstanceState != null) {
+            // Dark-mode toggle par recreate() hota hai — wahi tab par wapas aao.
+            startTab = savedInstanceState.getInt("sp_tab", TAB_HOME);
+            if (startTab < 0 || startTab >= tabViews.length) startTab = TAB_HOME;
+        }
+        showTab(startTab);
+    }
+
+    @Override
+    protected void onSaveInstanceState(Bundle outState) {
+        super.onSaveInstanceState(outState);
+        outState.putInt("sp_tab", currentTab);
     }
 
     private void showTab(int idx) {
@@ -398,12 +453,29 @@ public class MainActivity extends Activity {
         LinearLayout root = tabColumn();
         root.addView(heading("⚙️ Settings / Jankari", 20));
 
-        String version = "1.0";
+        String version = "5.0";
         try {
             version = getPackageManager().getPackageInfo(getPackageName(), 0).versionName;
         } catch (Exception ignored) { }
         root.addView(bodyText("SP WEB OS  •  Version " + version
                 + "\nKaam: single-file HTML ko phone par hi APK banana — no PC, no server."), lp(8));
+
+        root.addView(heading("🌙 Dark Mode", 16), lp(16));
+        root.addView(bodyText(
+                "Raat ko ya kam roshni me dark mode aankhon ke liye asaan rehta hai. "
+                + "Pink rang dono theme me wahi rehta hai."), lp(6));
+        Switch darkSwitch = new Switch(this);
+        darkSwitch.setText(darkMode ? "Dark Mode: ON" : "Dark Mode: OFF");
+        darkSwitch.setTextSize(15);
+        darkSwitch.setTextColor(DARK_TEXT);
+        darkSwitch.setChecked(darkMode);
+        darkSwitch.setPadding(0, dp(6), 0, dp(6));
+        darkSwitch.setOnCheckedChangeListener((btn, checked) -> {
+            getSharedPreferences(PREFS_NAME, MODE_PRIVATE).edit()
+                    .putBoolean(PREF_DARK_MODE, checked).apply();
+            recreate(); // poora UI naye theme ke saath dobara banta hai
+        });
+        root.addView(darkSwitch, lp(4));
 
         root.addView(heading("📖 Kaise istemaal karen", 16), lp(16));
         root.addView(bodyText(
@@ -519,7 +591,7 @@ public class MainActivity extends Activity {
         Button use = new Button(this);
         use.setText("▶ खोलो / Use");
         styleSmall(use);
-        use.setTextColor(PINK_DARK);
+        use.setTextColor(PINK_TEXT);
         use.setOnClickListener(v -> {
             loadFromLibrary(f);
             showTab(TAB_HOME);
@@ -787,7 +859,7 @@ public class MainActivity extends Activity {
         Button install = new Button(this);
         install.setText("📲 Install");
         styleSmall(install);
-        install.setTextColor(PINK_DARK);
+        install.setTextColor(PINK_TEXT);
         install.setOnClickListener(v -> openApk(it));
         btns.addView(install);
 
