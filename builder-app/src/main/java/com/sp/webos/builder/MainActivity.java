@@ -3,7 +3,10 @@ package com.sp.webos.builder;
 import android.Manifest;
 import android.app.Activity;
 import android.app.AlertDialog;
+import android.app.Dialog;
 import android.app.RecoverableSecurityException;
+import android.content.ClipData;
+import android.content.ClipboardManager;
 import android.content.ContentUris;
 import android.content.ContentValues;
 import android.content.Intent;
@@ -23,9 +26,11 @@ import android.os.Environment;
 import android.provider.MediaStore;
 import android.provider.Settings;
 import android.text.Editable;
+import android.text.InputType;
 import android.text.TextWatcher;
 import android.view.Gravity;
 import android.view.Window;
+import android.view.WindowManager;
 import android.view.View;
 import android.webkit.JavascriptInterface;
 import android.webkit.WebSettings;
@@ -51,21 +56,24 @@ import java.text.SimpleDateFormat;
 import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.Date;
+import java.util.HashMap;
 import java.util.List;
 import java.util.Locale;
+import java.util.Map;
 import java.util.regex.Matcher;
 import java.util.regex.Pattern;
 
 /**
  * SP WEB OS — single-file HTML ko phone par hi APK banane wala app.
  * Flow: HTML file chuno ya code paste karo -> app ka naam do (optional)
- * -> "APK Banao" -> "Install Karo".
- * Har build ka HTML app ki apni library me save hota hai, aur bana hua
- * APK Downloads/SP WEB OS folder me bhi copy hota hai.
+ * -> template chuno -> "APK Banao" -> "Install Karo".
+ * v5.1 policy: app ke andar kuch save NAHI hota. Har build ki files
+ * (HTML, APK, icon) Downloads/SP WEB OS/<AppName>/ me jati hain —
+ * Settings ke Auto Save toggles ke hisaab se.
  * Alag naam = alag package id = kai apps ek saath phone par reh sakte hain.
  *
- * v5 UI: neeche 4 tabs — Home (build flow), HTMLs (library), APKs
- * (bane hue APK), Settings (jankari + help). Minimal pink-accent design.
+ * v5 UI: neeche 4 tabs — Home (build flow), HTMLs, APKs (dono
+ * Downloads-based), Settings (toggles + Help Center). Minimal pink design.
  */
 public class MainActivity extends Activity {
 
@@ -83,6 +91,15 @@ public class MainActivity extends Activity {
 
     private static final String PREFS_NAME = "sp_web_os_prefs";
     private static final String PREF_DARK_MODE = "dark_mode";
+    private static final String PREF_AUTO_SAVE_HTML = "auto_save_html";
+    private static final String PREF_AUTO_SAVE_APK = "auto_save_apk";
+    private static final String PREF_AUTO_SAVE_ICON = "auto_save_icon";
+    private static final String PREF_TEMPLATE_KIND = "template_kind";
+
+    // Templates (v5.1): builder ke andar bandle hue chaar template APK —
+    // template_<kind>.apk assets (CI unhe builder me daalta hai).
+    private static final String[] TEMPLATE_KINDS = {"default", "js3d", "url", "full"};
+    private static final String[] TEMPLATE_LABELS = {"Default", "3D JS", "URL", "Fullscreen"};
 
     private boolean darkMode;
     private int DARK_TEXT = 0xFF212121;   // mukhya text
@@ -126,6 +143,9 @@ public class MainActivity extends Activity {
     private TextView packagePreview;
     private EditText codeBox;
     private EditText nameBox;
+    private EditText urlBox;
+    private Button[] templateBtns;
+    private String templateKind = "default";
     private Button installBtn;
     private ImageView iconPreview;
     private TextView iconStatus;
@@ -369,12 +389,6 @@ public class MainActivity extends Activity {
         });
         root.addView(pickBtn, lp(14));
 
-        Button libraryBtn = new Button(this);
-        libraryBtn.setText("📚 Saved HTML (Library)");
-        styleOutline(libraryBtn);
-        libraryBtn.setOnClickListener(v -> showLibrary());
-        root.addView(libraryBtn, lp(8));
-
         codeBox = new EditText(this);
         codeBox.setHint("...ya yahan HTML code paste karo");
         codeBox.setMinLines(8);
@@ -404,6 +418,41 @@ public class MainActivity extends Activity {
         codeBox.addTextChangedListener(previewWatcher);
         nameBox.addTextChangedListener(previewWatcher);
         updatePackagePreview();
+
+        // ---- Template picker (v5.1): Default / 3D JS / URL / Fullscreen ----
+        root.addView(heading("🧩 Template", 15), lp(12));
+        LinearLayout tplRow = new LinearLayout(this);
+        tplRow.setOrientation(LinearLayout.HORIZONTAL);
+        templateBtns = new Button[TEMPLATE_KINDS.length];
+        for (int i = 0; i < TEMPLATE_KINDS.length; i++) {
+            final String kind = TEMPLATE_KINDS[i];
+            Button b = new Button(this);
+            b.setText(TEMPLATE_LABELS[i]);
+            styleSmall(b);
+            b.setTextSize(13);
+            b.setOnClickListener(v -> selectTemplate(kind));
+            LinearLayout.LayoutParams tp = new LinearLayout.LayoutParams(
+                    0, LinearLayout.LayoutParams.WRAP_CONTENT, 1f);
+            if (i > 0) tp.leftMargin = dp(6);
+            tplRow.addView(b, tp);
+            templateBtns[i] = b;
+        }
+        root.addView(tplRow, lp(6));
+        root.addView(bodyText("Default = aam web app • 3D JS = Three.js andar pehle se (games) • "
+                + "URL = website ko app banao • Fullscreen = kiosk style, screen hamesha on"), lp(4));
+
+        urlBox = new EditText(this);
+        urlBox.setHint("Website ka URL — jaise https://example.com");
+        urlBox.setSingleLine(true);
+        urlBox.setInputType(InputType.TYPE_CLASS_TEXT | InputType.TYPE_TEXT_VARIATION_URI);
+        styleField(urlBox);
+        urlBox.setVisibility(View.GONE);
+        root.addView(urlBox, lp(8));
+
+        String savedKind = getSharedPreferences(PREFS_NAME, MODE_PRIVATE)
+                .getString(PREF_TEMPLATE_KIND, "default");
+        selectTemplate(savedKind != null && Arrays.asList(TEMPLATE_KINDS).contains(savedKind)
+                ? savedKind : "default");
 
         Button iconBtn = new Button(this);
         iconBtn.setText("🎨 App Icon Banao");
@@ -453,7 +502,7 @@ public class MainActivity extends Activity {
         LinearLayout root = tabColumn();
         root.addView(heading("⚙️ Settings / Jankari", 20));
 
-        String version = "5.0";
+        String version = "5.1";
         try {
             version = getPackageManager().getPackageInfo(getPackageName(), 0).versionName;
         } catch (Exception ignored) { }
@@ -477,6 +526,15 @@ public class MainActivity extends Activity {
         });
         root.addView(darkSwitch, lp(4));
 
+        root.addView(heading("💾 Auto Save (Downloads)", 16), lp(16));
+        root.addView(bodyText(
+                "Har build ke baad files app ke andar NAHI, seedha "
+                + "'Downloads/SP WEB OS/<AppName>/' folder me save hoti hain. "
+                + "Kya-kya save ho, ye teen toggles tay karte hain (teeno default ON)."), lp(6));
+        addSaveToggle(root, "Auto Save HTMLs", PREF_AUTO_SAVE_HTML);
+        addSaveToggle(root, "Auto Save Apks", PREF_AUTO_SAVE_APK);
+        addSaveToggle(root, "Auto Save Icons", PREF_AUTO_SAVE_ICON);
+
         root.addView(heading("📖 Kaise istemaal karen", 16), lp(16));
         root.addView(bodyText(
                 "1.  Home tab me HTML file chuno ya code paste karo.\n"
@@ -485,17 +543,25 @@ public class MainActivity extends Activity {
                 + "<title> ya file ke naam se apne aap ban jata hai.\n"
                 + "3.  Chaho to '🎨 App Icon Banao' se apna icon design karo — background "
                 + "colour, pattern aur text tum khud chunte ho.\n"
-                + "4.  '🚀 APK Banao' dabao. APK taiyaar hoga, HTML library me save hoga.\n"
+                + "4.  '🚀 APK Banao' dabao. APK taiyaar hoga aur Auto Save toggles ke "
+                + "hisaab se Downloads me save hoga.\n"
                 + "5.  '📲 Install Karo' dabakar app install karo.\n\n"
-                + "📄 HTMLs tab — save hue saare HTML: kholo (build ke liye load), "
+                + "📄 HTMLs tab — Downloads me save hue saare HTML: kholo (build ke liye load), "
                 + "naam badlo, ya delete karo.\n"
                 + "📦 APKs tab — bane hue saare APK: install, share ya delete karo."), lp(6));
 
         root.addView(heading("📥 Downloads folder", 16), lp(16));
         root.addView(bodyText(
-                "Har bane hue APK ki ek copy 'Downloads/SP WEB OS' folder me bhi "
-                + "rakhi jati hai. Wahan se Files app ke through bhi APK khol, share "
-                + "ya delete kar sakte ho — APKs tab wahi folder dikhata hai."), lp(6));
+                "Har app ki files 'Downloads/SP WEB OS/<AppName>/' folder me milti hain — "
+                + "us app ki HTML, APK aur icon.png. App ke andar kuch save nahi hota, "
+                + "isliye builder uninstall ho jaye to bhi files tumhare paas rehti hain. "
+                + "HTMLs aur APKs tab wahi folders dikhate hain."), lp(6));
+
+        Button helpBtn = new Button(this);
+        helpBtn.setText("❓ Help Center");
+        stylePrimary(helpBtn);
+        helpBtn.setOnClickListener(v -> openHelpCenter());
+        root.addView(helpBtn, lp(16));
 
         Button gotoApks = new Button(this);
         gotoApks.setText("📦 Bane hue APK dekho");
@@ -512,7 +578,197 @@ public class MainActivity extends Activity {
         return root;
     }
 
-    // ---------------------------------------------------------- HTMLs tab (library)
+    /** Settings ka ek Auto Save toggle (SharedPreferences, default ON). */
+    private void addSaveToggle(LinearLayout root, final String label, final String prefKey) {
+        final Switch sw = new Switch(this);
+        boolean on = getSharedPreferences(PREFS_NAME, MODE_PRIVATE)
+                .getBoolean(prefKey, true);
+        sw.setText(label + ": " + (on ? "ON" : "OFF"));
+        sw.setTextSize(15);
+        sw.setTextColor(DARK_TEXT);
+        sw.setChecked(on);
+        sw.setPadding(0, dp(4), 0, dp(4));
+        sw.setOnCheckedChangeListener((btn, checked) -> {
+            getSharedPreferences(PREFS_NAME, MODE_PRIVATE).edit()
+                    .putBoolean(prefKey, checked).apply();
+            sw.setText(label + ": " + (checked ? "ON" : "OFF"));
+        });
+        root.addView(sw, lp(2));
+    }
+
+    // ---------------------------------------------------------- Help Center
+
+    /** Ek sawal-jawab jodi Help Center me jodta hai. */
+    private void helpQa(LinearLayout col, String q, String a) {
+        col.addView(heading(q, 14), lp(12));
+        col.addView(bodyText(a), lp(3));
+    }
+
+    /** Monospace code block + uska apna Copy button (bridge formats ke liye). */
+    private void helpCodeBlock(LinearLayout col, final String code) {
+        TextView t = new TextView(this);
+        t.setText(code);
+        t.setTypeface(Typeface.MONOSPACE);
+        t.setTextSize(12.5f);
+        t.setTextColor(DARK_TEXT);
+        t.setBackground(roundedBg(CARD_BG, 8, BORDER));
+        t.setPadding(dp(10), dp(8), dp(10), dp(8));
+        col.addView(t, lp(6));
+        Button copy = new Button(this);
+        copy.setText("📋 Copy");
+        styleSmall(copy);
+        copy.setTextColor(PINK_TEXT);
+        copy.setOnClickListener(v -> copyToClipboard(code));
+        LinearLayout.LayoutParams cp = new LinearLayout.LayoutParams(
+                LinearLayout.LayoutParams.WRAP_CONTENT,
+                LinearLayout.LayoutParams.WRAP_CONTENT);
+        cp.topMargin = dp(4);
+        col.addView(copy, cp);
+    }
+
+    private void copyToClipboard(String text) {
+        ClipboardManager cm = (ClipboardManager) getSystemService(CLIPBOARD_SERVICE);
+        if (cm != null) {
+            cm.setPrimaryClip(ClipData.newPlainText("SP WEB OS", text));
+        }
+        Toast.makeText(this, "📋 Copy ho gaya ✓", Toast.LENGTH_SHORT).show();
+    }
+
+    /** ❓ Help Center — apna alag full-screen page (Settings saaf rahe,
+     *  isliye sab sawal/tips/bridge-format yahan rakhe hain). */
+    private void openHelpCenter() {
+        final Dialog dialog = new Dialog(this);
+        LinearLayout col = tabColumn();
+        col.setBackgroundColor(PAGE_BG);
+
+        col.addView(heading("❓ Help Center", 20));
+        col.addView(bodyText("Aam sawalon ke jawab, kaam ke tips, aur AI bridge ka "
+                + "poora code format — sab ek jagah."), lp(6));
+
+        col.addView(heading("❓ आम सवाल (Q&A)", 17), lp(14));
+        helpQa(col, "Q1. App kaise banayein?",
+                "Home tab me HTML file chuno ya code paste karo → chaaho to app ka "
+                + "naam aur icon do → '🚀 APK Banao' dabao → '📲 Install Karo' se "
+                + "install karo. Bas, app taiyaar!");
+        helpQa(col, "Q2. Apna icon kaise lagayein?",
+                "'🎨 App Icon Banao' dabao → background rang, pattern, apna text "
+                + "aur text ki position (upar / beech / neeche) chuno → '✅ यह icon "
+                + "इस्तेमाल करो' dabakar dialog band karo → phir APK banao. Wahi "
+                + "design launcher par icon banega.");
+        helpQa(col, "Q3. Chaaro templates me kya farak hai?",
+                "Default — aam single-file web app. 3D JS — Three.js library andar "
+                + "pehle se hai, games/3D ke liye (apni file me three.min.js seedha "
+                + "milta hai). URL — kisi website ka pata bharo, wahi app ban "
+                + "jayegi (HTML nahi chahiye). Fullscreen — kiosk style: immersive "
+                + "fullscreen aur screen hamesha on.");
+        helpQa(col, "Q4. Files kahan save hoti hain? App ke andar kuch kyun nahi?",
+                "v5.1 ki policy: builder app apne andar kuch save NAHI karta. Har "
+                + "app ki files Downloads/SP WEB OS/<AppName>/ folder me milti "
+                + "hain — <AppName>.apk, <AppName>.html aur icon.png. Builder "
+                + "uninstall ho jaye to bhi files tumhare paas rehti hain.");
+        helpQa(col, "Q5. Auto Save toggles kya karte hain?",
+                "Settings ke teen toggles — Auto Save HTMLs / Apks / Icons — tay "
+                + "karte hain har build ke baad Downloads me kya-kya save ho. "
+                + "Teeno default ON hain. Koi OFF ho to woh file save nahi hogi "
+                + "(APK phir bhi banta hai, Install bhi hota hai).");
+        helpQa(col, "Q6. Ek saath kai files (jaise gaane) select nahi ho rahe?",
+                "Ye Android file picker ka tareeka hai: pehli file par LONG-PRESS "
+                + "karo, phir baaki files tap karke select karo. SP WEB OS ke apps "
+                + "me <input type=\"file\" multiple> ka support pehle se hai.");
+        helpQa(col, "Q7. Bana hua APK share kaise karoon?",
+                "📦 APKs tab kholo → app ke saamne '↗ Share' dabao → WhatsApp ya "
+                + "koi chat app chuno. Ya Files app se Downloads/SP WEB OS folder "
+                + "me jaakar wahan se share karo.");
+        helpQa(col, "Q8. Purane app ko update kaise karoon — data udta to nahi?",
+                "Usi naam se dobara APK banao aur install karo. Package ID aur "
+                + "signing key hamesha wahi rehte hain, isliye naya version purane "
+                + "ke upar update ki tarah chadhta hai — data safe rehta hai.");
+        helpQa(col, "Q9. Web app me notification / reminder kaam nahi kar raha?",
+                "Browser wala Notification API is shell me nahi chalta — SpWebOS "
+                + "bridge istemaal karo: SpWebOS.notify(...) turant ke liye aur "
+                + "SpWebOS.scheduleNotify(seconds, ...) baad ke liye. Poora code "
+                + "format neeche 'AI Bridge' section me hai.");
+        helpQa(col, "Q10. Dark mode kaise on karoon?",
+                "⚙️ Settings tab → '🌙 Dark Mode' switch ON karo. Poora app dark "
+                + "theme me badal jayega, pink rang waisa hi rahega.");
+
+        col.addView(heading("💡 Tips", 17), lp(18));
+        col.addView(bodyText(
+                "💡 App ka naam hamesha do — naam se alag Package ID banta hai. "
+                + "Bina naam wale apps ek-doosre ko replace kar dete hain.\n"
+                + "💡 Ek hi naam = update. Purani app par naya version chadh jata "
+                + "hai, data nahi udta.\n"
+                + "💡 Icon me chhota text (1–3 akshar) sabse saaf dikhta hai.\n"
+                + "💡 Game ya 3D ke liye 3D JS template chuno — three.min.js alag "
+                + "se download karne ki zaroorat nahi.\n"
+                + "💡 Badi HTML file ho to code paste ki jagah 'HTML File Chuno' "
+                + "istemaal karo — zyada reliable hai.\n"
+                + "💡 APK share karne se pehle ek baar khud install karke test "
+                + "kar lo."), lp(6));
+
+        col.addView(heading("🤖 AI Bridge — Code Format", 17), lp(18));
+        col.addView(bodyText(
+                "Bane hue apps ke andar web page ko ek khaas bridge milta hai: "
+                + "window.SpWebOS. Isi se notifications aur reminders bante hain. "
+                + "Neeche ke formats copy karke apni web app me lagao — ya AI ko "
+                + "de do, woh tumhare liye code likh dega."), lp(6));
+
+        col.addView(heading("1) Bridge hai ya nahi — check", 14), lp(12));
+        helpCodeBlock(col,
+                "if (window.SpWebOS) {\n"
+                + "  // SP WEB OS ke andar ho — bridge taiyaar hai\n"
+                + "}");
+        col.addView(heading("2) Turant notification", 14), lp(12));
+        helpCodeBlock(col,
+                "SpWebOS.notify(\"Padhai ka time\", \"Polity ke notes revise karo!\");");
+        col.addView(heading("3) Baad me notification (reminder)", 14), lp(12));
+        col.addView(bodyText("Pehla number = kitne SECOND baad. App band ho tab "
+                + "bhi notification aayega. (1 ghanta = 3600, 1 din = 86400)"), lp(3));
+        helpCodeBlock(col,
+                "SpWebOS.scheduleNotify(3600, \"Reminder\", \"Ek ghanta ho gaya!\");");
+        col.addView(heading("4) App ko background me zinda rakho", 14), lp(12));
+        helpCodeBlock(col,
+                "SpWebOS.keepAlive(true);   // band karne ke liye: false");
+        col.addView(heading("5) Chhota toast message", 14), lp(12));
+        helpCodeBlock(col,
+                "SpWebOS.toast(\"Save ho gaya!\");");
+
+        col.addView(heading("📋 AI ko dene wala poora instruction", 14), lp(14));
+        col.addView(bodyText("Ye paragraph copy karke kisi bhi AI (ChatGPT, "
+                + "Gemini, Muse…) ko apni maang ke saath de do — woh bridge wala "
+                + "sahi code likhega:"), lp(3));
+        helpCodeBlock(col,
+                "This web app will run inside SP WEB OS, an Android WebView shell. "
+                + "For notifications and reminders do NOT use the web Notification "
+                + "API — use the built-in bridge instead. First check "
+                + "`if (window.SpWebOS)`. Then: `SpWebOS.notify(title, body)` "
+                + "shows a notification immediately; "
+                + "`SpWebOS.scheduleNotify(secondsFromNow, title, body)` "
+                + "schedules one (the first argument is SECONDS, e.g. 3600 = 1 "
+                + "hour, and it fires even when the app is closed); "
+                + "`SpWebOS.keepAlive(true)` keeps the app alive in the "
+                + "background; `SpWebOS.toast(text)` shows a small toast.");
+
+        Button closeBtn = new Button(this);
+        closeBtn.setText("Band Karo");
+        stylePrimary(closeBtn);
+        closeBtn.setOnClickListener(v -> dialog.dismiss());
+        col.addView(closeBtn, lp(20));
+
+        ScrollView scroll = new ScrollView(this);
+        scroll.setBackgroundColor(PAGE_BG);
+        scroll.addView(col);
+        dialog.setContentView(scroll);
+        if (dialog.getWindow() != null) {
+            dialog.getWindow().setLayout(
+                    WindowManager.LayoutParams.MATCH_PARENT,
+                    WindowManager.LayoutParams.MATCH_PARENT);
+            dialog.getWindow().setBackgroundDrawable(new ColorDrawable(PAGE_BG));
+        }
+        dialog.show();
+    }
+
+    // ---------------------------------------------------------- HTMLs tab
 
     private LinearLayout buildHtmlTab() {
         LinearLayout root = tabColumn();
@@ -538,35 +794,346 @@ public class MainActivity extends Activity {
         return root;
     }
 
+    /** Downloads/SP WEB OS/<AppName>/ ke andar ki ek HTML file ka record. */
+    private static class HtmlItem {
+        String appName;   // sub-folder ka naam (khali = seedha SP WEB OS folder)
+        String fileName;  // display name (.html ke saath)
+        long size;
+        long modifiedMs;
+        Uri uri;          // API 29+ MediaStore
+        File local;       // API 26-28 direct file
+    }
+
+    /** Downloads ke app-folders se saari .html files ikatthi karta hai.
+     *  API 29+ par MediaStore, purane Android par folder walk. Har jagah
+     *  try/catch — tab kabhi crash nahi hota. */
+    private List<HtmlItem> queryDownloadHtmlItems() {
+        List<HtmlItem> out = new ArrayList<>();
+        if (Build.VERSION.SDK_INT >= 29) {
+            Cursor c = null;
+            try {
+                Uri coll = MediaStore.Downloads.EXTERNAL_CONTENT_URI;
+                String[] proj = {
+                        MediaStore.Downloads._ID,
+                        MediaStore.Downloads.DISPLAY_NAME,
+                        MediaStore.Downloads.SIZE,
+                        MediaStore.Downloads.DATE_MODIFIED,
+                        MediaStore.Downloads.RELATIVE_PATH
+                };
+                String sel = MediaStore.Downloads.RELATIVE_PATH + " LIKE ?";
+                String[] args = {Environment.DIRECTORY_DOWNLOADS + "/SP WEB OS%"};
+                c = getContentResolver().query(coll, proj, sel, args,
+                        MediaStore.Downloads.DATE_MODIFIED + " DESC");
+                if (c != null) {
+                    int idI = c.getColumnIndexOrThrow(MediaStore.Downloads._ID);
+                    int nameI = c.getColumnIndexOrThrow(MediaStore.Downloads.DISPLAY_NAME);
+                    int sizeI = c.getColumnIndexOrThrow(MediaStore.Downloads.SIZE);
+                    int dateI = c.getColumnIndexOrThrow(MediaStore.Downloads.DATE_MODIFIED);
+                    int relI = c.getColumnIndexOrThrow(MediaStore.Downloads.RELATIVE_PATH);
+                    while (c.moveToNext()) {
+                        String nm = c.getString(nameI);
+                        if (nm == null || !nm.toLowerCase(Locale.ROOT).endsWith(".html")) continue;
+                        HtmlItem it = new HtmlItem();
+                        it.appName = appFolderFromRelativePath(c.getString(relI));
+                        it.fileName = nm;
+                        it.size = c.getLong(sizeI);
+                        it.modifiedMs = c.getLong(dateI) * 1000L;
+                        it.uri = ContentUris.withAppendedId(coll, c.getLong(idI));
+                        out.add(it);
+                    }
+                }
+            } catch (Exception ignored) {
+                // Folder na mile / permission na ho — khaali list hi sahi.
+            } finally {
+                if (c != null) c.close();
+            }
+        } else {
+            try {
+                File base = new File(Environment.getExternalStoragePublicDirectory(
+                        Environment.DIRECTORY_DOWNLOADS), "SP WEB OS");
+                collectDownloadFiles(base, "", ".html", out, null);
+            } catch (Exception ignored) { }
+        }
+        out.sort((a, b) -> Long.compare(b.modifiedMs, a.modifiedMs));
+        return out;
+    }
+
+    /** "Download/SP WEB OS/<app>/" jaisi RELATIVE_PATH se app folder ka naam. */
+    private static String appFolderFromRelativePath(String rel) {
+        if (rel == null) return "";
+        String prefix = Environment.DIRECTORY_DOWNLOADS + "/SP WEB OS/";
+        if (!rel.startsWith(prefix)) return "";
+        String rest = rel.substring(prefix.length());
+        int slash = rest.indexOf('/');
+        return slash >= 0 ? rest.substring(0, slash) : rest;
+    }
+
+    /** API 26-28 ke liye: SP WEB OS folder aur uske app sub-folders me
+     *  di gayi extension ki files dhoondhta hai (ek level gehra). */
+    private void collectDownloadFiles(File dir, String appName, String ext,
+                                      List<HtmlItem> htmlOut, List<ApkItem> apkOut) {
+        File[] fs = dir.listFiles();
+        if (fs == null) return;
+        for (File f : fs) {
+            if (f.isDirectory()) {
+                if (appName.isEmpty()) collectDownloadFiles(f, f.getName(), ext, htmlOut, apkOut);
+            } else if (f.getName().toLowerCase(Locale.ROOT).endsWith(ext)) {
+                if (htmlOut != null) {
+                    HtmlItem it = new HtmlItem();
+                    it.appName = appName;
+                    it.fileName = f.getName();
+                    it.size = f.length();
+                    it.modifiedMs = f.lastModified();
+                    it.local = f;
+                    htmlOut.add(it);
+                } else if (apkOut != null) {
+                    ApkItem it = new ApkItem();
+                    it.label = f.getName();
+                    it.size = f.length();
+                    it.modifiedMs = f.lastModified();
+                    it.local = f;
+                    apkOut.add(it);
+                }
+            }
+        }
+    }
+
     private void refreshHtmlList() {
         if (htmlList == null) return;
-        File[] files = libraryDir().listFiles((d, n) -> n.endsWith(".html"));
-        List<File> all = new ArrayList<>();
-        if (files != null) all.addAll(Arrays.asList(files));
-        all.sort((a, b) -> Long.compare(b.lastModified(), a.lastModified()));
-
+        List<HtmlItem> all;
+        try {
+            all = queryDownloadHtmlItems();
+        } catch (Exception e) {
+            all = new ArrayList<>();
+        }
         long total = 0;
-        for (File f : all) total += f.length();
+        for (HtmlItem it : all) total += it.size;
         htmlHeader.setText("📄 Saved HTML — " + all.size() + " files • " + fmtSize(total));
 
         String q = htmlSearch.getText().toString().trim().toLowerCase(Locale.ROOT);
         htmlList.removeAllViews();
 
-        List<File> shown = new ArrayList<>();
-        for (File f : all) {
-            if (q.isEmpty() || f.getName().toLowerCase(Locale.ROOT).contains(q)) shown.add(f);
+        List<HtmlItem> shown = new ArrayList<>();
+        for (HtmlItem it : all) {
+            if (q.isEmpty()
+                    || it.fileName.toLowerCase(Locale.ROOT).contains(q)
+                    || it.appName.toLowerCase(Locale.ROOT).contains(q)) shown.add(it);
         }
         if (shown.isEmpty()) {
             TextView empty = bodyText(all.isEmpty()
-                    ? "Abhi koi HTML save nahi hai.\nPehle Home tab se ek APK banao — HTML apne aap yahan save ho jayega."
+                    ? "Abhi Downloads me koi HTML save nahi hai.\nAPK banao — 'Auto Save HTMLs' ON ho to HTML Downloads/SP WEB OS/<AppName>/ me save hoga."
                     : "Is naam se koi HTML nahi mila. Kuch aur khoj kar dekho.");
             htmlList.addView(empty, lp(10));
-            return;
+        } else {
+            for (HtmlItem it : shown) htmlList.addView(htmlDownloadRow(it), lp(8));
         }
-        for (File f : shown) htmlList.addView(htmlRow(f), lp(8));
+
+        // Purani internal library (v5.0 tak app ke andar save hoti thi) —
+        // sirf dikhayi jati hai taaki Use/Delete ho sake; nayi files wahan
+        // NAHI jati. Search chal raha ho to ye group chhup jata hai.
+        if (q.isEmpty()) {
+            File[] legacy = libraryDir().listFiles((d, n) -> n.endsWith(".html"));
+            if (legacy != null && legacy.length > 0) {
+                Arrays.sort(legacy, (a, b) -> Long.compare(b.lastModified(), a.lastModified()));
+                htmlList.addView(heading("🗄️ पुरानी Library (app के अंदर)", 15), lp(18));
+                htmlList.addView(bodyText(
+                        "Ye files purane versions me app ke andar save hui thi. "
+                        + "Use ya Delete kar sakte ho."), lp(4));
+                for (File f : legacy) htmlList.addView(legacyRow(f), lp(8));
+            }
+        }
     }
 
-    private LinearLayout htmlRow(final File f) {
+    private LinearLayout htmlDownloadRow(final HtmlItem it) {
+        LinearLayout row = new LinearLayout(this);
+        row.setOrientation(LinearLayout.VERTICAL);
+        row.setBackground(roundedBg(CARD_BG, 10, BORDER));
+        row.setPadding(dp(12), dp(10), dp(12), dp(10));
+
+        TextView name = new TextView(this);
+        name.setText(it.fileName.replaceAll("(?i)\\.html$", ""));
+        name.setTextSize(15);
+        name.setTextColor(DARK_TEXT);
+        name.setTypeface(null, Typeface.BOLD);
+        row.addView(name);
+
+        TextView meta = new TextView(this);
+        meta.setText((it.appName.isEmpty() ? "SP WEB OS" : "App: " + it.appName)
+                + " • " + fmtSize(it.size) + " • " + fmtDate(it.modifiedMs));
+        meta.setTextSize(12);
+        meta.setTextColor(GREY_TEXT);
+        row.addView(meta);
+
+        LinearLayout btns = new LinearLayout(this);
+        btns.setOrientation(LinearLayout.HORIZONTAL);
+        Button use = new Button(this);
+        use.setText("▶ खोलो / Use");
+        styleSmall(use);
+        use.setTextColor(PINK_TEXT);
+        use.setOnClickListener(v -> useDownloadHtml(it));
+        btns.addView(use);
+
+        Button rename = new Button(this);
+        rename.setText("✏️ Rename");
+        styleSmall(rename);
+        rename.setOnClickListener(v -> renameDownloadHtmlDialog(it));
+        LinearLayout.LayoutParams rp = new LinearLayout.LayoutParams(
+                LinearLayout.LayoutParams.WRAP_CONTENT, LinearLayout.LayoutParams.WRAP_CONTENT);
+        rp.leftMargin = dp(8);
+        btns.addView(rename, rp);
+
+        Button del = new Button(this);
+        del.setText("🗑️ Delete");
+        styleSmall(del);
+        del.setTextColor(RED);
+        del.setOnClickListener(v -> confirmDeleteDownloadHtml(it));
+        btns.addView(del, rp);
+
+        row.addView(btns, lp(8));
+        return row;
+    }
+
+    /** Downloads wali HTML ko padhkar Home ke build flow me load karta hai. */
+    private void useDownloadHtml(HtmlItem it) {
+        try {
+            byte[] bytes;
+            if (it.uri != null) {
+                try (InputStream in = getContentResolver().openInputStream(it.uri)) {
+                    if (in == null) throw new Exception("file khul nahi payi");
+                    ByteArrayOutputStream baos = new ByteArrayOutputStream();
+                    byte[] buf = new byte[8192];
+                    int n;
+                    while ((n = in.read(buf)) != -1) baos.write(buf, 0, n);
+                    bytes = baos.toByteArray();
+                }
+            } else {
+                try (InputStream in = new FileInputStream(it.local)) {
+                    ByteArrayOutputStream baos = new ByteArrayOutputStream();
+                    byte[] buf = new byte[8192];
+                    int n;
+                    while ((n = in.read(buf)) != -1) baos.write(buf, 0, n);
+                    bytes = baos.toByteArray();
+                }
+            }
+            pickedHtml = bytes;
+            pickedName = it.fileName;
+            codeBox.setText("");
+            updatePackagePreview();
+            setStatus("Downloads se load ho gaya: " + it.fileName + " (" + bytes.length
+                    + " bytes)\nAb naam dekar (ya bina naam) 'APK Banao' dabao.");
+            showTab(TAB_HOME);
+        } catch (Exception e) {
+            Toast.makeText(this, "File padhne me dikkat: " + e.getMessage(),
+                    Toast.LENGTH_LONG).show();
+        }
+    }
+
+    private void renameDownloadHtmlDialog(final HtmlItem it) {
+        String base = it.fileName.replaceAll("(?i)\\.html$", "");
+        final EditText input = new EditText(this);
+        input.setText(base);
+        input.setSingleLine(true);
+        input.setSelection(input.getText().length());
+        styleField(input);
+        LinearLayout wrap = new LinearLayout(this);
+        wrap.setPadding(dp(20), dp(8), dp(20), 0);
+        wrap.addView(input, new LinearLayout.LayoutParams(
+                LinearLayout.LayoutParams.MATCH_PARENT, LinearLayout.LayoutParams.WRAP_CONTENT));
+
+        new AlertDialog.Builder(this)
+                .setTitle("✏️ HTML ka naam badlo")
+                .setView(wrap)
+                .setPositiveButton("Save", (dialog, which) -> {
+                    String typed = input.getText().toString().trim()
+                            .replaceAll("(?i)\\.html$", "")
+                            .replaceAll("[\\\\/:*?\"<>|]+", "_");
+                    if (typed.isEmpty()) {
+                        Toast.makeText(this, "Naam khaali nahi ho sakta", Toast.LENGTH_LONG).show();
+                        return;
+                    }
+                    if (typed.length() > 60) typed = typed.substring(0, 60);
+                    String newName = typed + ".html";
+                    if (newName.equals(it.fileName)) return;
+                    if (it.uri != null) {
+                        // MediaStore: DISPLAY_NAME badalna hi rename hai.
+                        try {
+                            ContentValues cv = new ContentValues();
+                            cv.put(MediaStore.Downloads.DISPLAY_NAME, newName);
+                            int rows = getContentResolver().update(it.uri, cv, null, null);
+                            Toast.makeText(this, rows > 0 ? "Naam badal gaya ✓"
+                                    : "Rename nahi ho paya", Toast.LENGTH_LONG).show();
+                        } catch (RecoverableSecurityException e) {
+                            try {
+                                startIntentSenderForResult(
+                                        e.getUserAction().getActionIntent().getIntentSender(),
+                                        REQ_APK_DELETE, null, 0, 0, 0);
+                            } catch (Exception e2) {
+                                Toast.makeText(this, "Rename ke liye Files app use karo",
+                                        Toast.LENGTH_LONG).show();
+                            }
+                        } catch (Exception e) {
+                            Toast.makeText(this, "Rename nahi ho paya: " + e.getMessage(),
+                                    Toast.LENGTH_LONG).show();
+                        }
+                    } else if (it.local != null) {
+                        File dest = new File(it.local.getParentFile(), newName);
+                        if (dest.exists()) {
+                            Toast.makeText(this, "Is naam ki file pehle se hai",
+                                    Toast.LENGTH_LONG).show();
+                            return;
+                        }
+                        Toast.makeText(this, it.local.renameTo(dest)
+                                ? "Naam badal gaya ✓" : "Rename nahi ho paya",
+                                Toast.LENGTH_LONG).show();
+                    }
+                    refreshHtmlList();
+                })
+                .setNegativeButton("Cancel", null)
+                .show();
+    }
+
+    private void confirmDeleteDownloadHtml(final HtmlItem it) {
+        new AlertDialog.Builder(this)
+                .setTitle("🗑️ Delete karo?")
+                .setMessage(it.fileName + "\nYe HTML Downloads/SP WEB OS folder se hat jayega. "
+                        + "Bana hua APK safe rahega.")
+                .setPositiveButton("Delete", (dialog, which) -> {
+                    if (it.uri != null) {
+                        try {
+                            int rows = getContentResolver().delete(it.uri, null, null);
+                            Toast.makeText(this, rows > 0 ? "Delete ho gaya 🗑️"
+                                    : "Delete nahi hua — Files app se try karo",
+                                    Toast.LENGTH_LONG).show();
+                        } catch (RecoverableSecurityException e) {
+                            try {
+                                startIntentSenderForResult(
+                                        e.getUserAction().getActionIntent().getIntentSender(),
+                                        REQ_APK_DELETE, null, 0, 0, 0);
+                            } catch (Exception e2) {
+                                Toast.makeText(this, "Delete ke liye Files app use karo",
+                                        Toast.LENGTH_LONG).show();
+                            }
+                        } catch (SecurityException e) {
+                            Toast.makeText(this, "Delete nahi ho paya — Files app se delete karo",
+                                    Toast.LENGTH_LONG).show();
+                        } catch (Exception e) {
+                            Toast.makeText(this, "Delete nahi ho paya: " + e.getMessage(),
+                                    Toast.LENGTH_LONG).show();
+                        }
+                    } else if (it.local != null) {
+                        //noinspection ResultOfMethodCallIgnored
+                        boolean ok = it.local.delete();
+                        Toast.makeText(this, ok ? "Delete ho gaya 🗑️" : "Delete nahi ho paya",
+                                Toast.LENGTH_SHORT).show();
+                    }
+                    refreshHtmlList();
+                })
+                .setNegativeButton("Cancel", null)
+                .show();
+    }
+
+    /** Purani internal library ki ek row — sirf Use / Delete. */
+    private LinearLayout legacyRow(final File f) {
         LinearLayout row = new LinearLayout(this);
         row.setOrientation(LinearLayout.VERTICAL);
         row.setBackground(roundedBg(CARD_BG, 10, BORDER));
@@ -598,77 +1165,20 @@ public class MainActivity extends Activity {
         });
         btns.addView(use);
 
-        Button rename = new Button(this);
-        rename.setText("✏️ Rename");
-        styleSmall(rename);
-        rename.setOnClickListener(v -> renameHtmlDialog(f));
-        LinearLayout.LayoutParams rp = new LinearLayout.LayoutParams(
-                LinearLayout.LayoutParams.WRAP_CONTENT, LinearLayout.LayoutParams.WRAP_CONTENT);
-        rp.leftMargin = dp(8);
-        btns.addView(rename, rp);
-
         Button del = new Button(this);
         del.setText("🗑️ Delete");
         styleSmall(del);
         del.setTextColor(RED);
         del.setOnClickListener(v -> confirmDeleteHtml(f));
+        LinearLayout.LayoutParams rp = new LinearLayout.LayoutParams(
+                LinearLayout.LayoutParams.WRAP_CONTENT, LinearLayout.LayoutParams.WRAP_CONTENT);
+        rp.leftMargin = dp(8);
         btns.addView(del, rp);
 
         row.addView(btns, lp(8));
         return row;
     }
 
-    private void renameHtmlDialog(final File f) {
-        // Library ke timestamp suffix (_yyyyMMdd-HHmmss) ko barkarar rakhte hain,
-        // taaki file ki pehchan aur sorting na bigde.
-        String oldName = f.getName();
-        String foundSuffix = "";
-        Matcher m = Pattern.compile("(_\\d{8}-\\d{6})\\.html$").matcher(oldName);
-        if (m.find()) foundSuffix = m.group(1);
-        final String suffix = foundSuffix;
-        String base = oldName.replaceAll("(?i)\\.html$", "");
-        if (!suffix.isEmpty() && base.endsWith(suffix)) {
-            base = base.substring(0, base.length() - suffix.length());
-        }
-
-        final EditText input = new EditText(this);
-        input.setText(base);
-        input.setSingleLine(true);
-        input.setSelection(input.getText().length());
-        styleField(input);
-        LinearLayout wrap = new LinearLayout(this);
-        wrap.setPadding(dp(20), dp(8), dp(20), 0);
-        wrap.addView(input, new LinearLayout.LayoutParams(
-                LinearLayout.LayoutParams.MATCH_PARENT, LinearLayout.LayoutParams.WRAP_CONTENT));
-
-        new AlertDialog.Builder(this)
-                .setTitle("✏️ HTML ka naam badlo")
-                .setView(wrap)
-                .setPositiveButton("Save", (dialog, which) -> {
-                    String typed = input.getText().toString().trim()
-                            .replaceAll("(?i)\\.html$", "")
-                            .replaceAll("[\\\\/:*?\"<>|\\s]+", "_");
-                    if (typed.isEmpty()) {
-                        Toast.makeText(this, "Naam khaali nahi ho sakta", Toast.LENGTH_LONG).show();
-                        return;
-                    }
-                    if (typed.length() > 40) typed = typed.substring(0, 40);
-                    File dest = new File(f.getParentFile(), typed + suffix + ".html");
-                    if (dest.getName().equals(oldName)) return;
-                    if (dest.exists()) {
-                        Toast.makeText(this, "Is naam ki file pehle se hai", Toast.LENGTH_LONG).show();
-                        return;
-                    }
-                    if (f.renameTo(dest)) {
-                        Toast.makeText(this, "Naam badal gaya ✓", Toast.LENGTH_SHORT).show();
-                    } else {
-                        Toast.makeText(this, "Rename nahi ho paya", Toast.LENGTH_LONG).show();
-                    }
-                    refreshHtmlList();
-                })
-                .setNegativeButton("Cancel", null)
-                .show();
-    }
 
     private void confirmDeleteHtml(final File f) {
         String pretty = fileBaseName(f.getName());
@@ -689,14 +1199,14 @@ public class MainActivity extends Activity {
 
     // ---------------------------------------------------------- APKs tab
 
-    /** Ek bane hue APK ka record — MediaStore Uri wala ya apni local file wala. */
+    /** Ek bane hue APK ka record — MediaStore Uri wala ya local file wala
+     *  (dono hi Downloads/SP WEB OS ke andar ke hain). */
     private static class ApkItem {
         String label;
         long size;
         long modifiedMs;
         Uri uri;      // MediaStore (Downloads) items ke liye
-        File local;   // WebApp.apk (latest build) / purane Android par Downloads file
-        boolean latest;
+        File local;   // purane Android par Downloads ki direct file
     }
 
     private LinearLayout buildApkTab() {
@@ -723,30 +1233,17 @@ public class MainActivity extends Activity {
         return root;
     }
 
-    /** Downloads/SP WEB OS (MediaStore / purane Android par folder) + apna
-     *  latest build (WebApp.apk) — sab jagah try/catch, tab kabhi crash nahi. */
+    /** Downloads/SP WEB OS ke saare APK (app sub-folders samet) —
+     *  MediaStore / purane Android par folder walk. v5.1 se app ke andar
+     *  koi APK save nahi hota, isliye koi pinned "latest build" row nahi.
+     *  Sab jagah try/catch, tab kabhi crash nahi. */
     private List<ApkItem> queryApkItems() {
         List<ApkItem> out = new ArrayList<>();
-        // 1) Sabse naya build — app ke apne folder ki WebApp.apk
-        try {
-            File ext = getExternalFilesDir(null);
-            if (ext != null) {
-                File w = new File(ext, "WebApp.apk");
-                if (w.exists() && w.length() > 0) {
-                    ApkItem it = new ApkItem();
-                    it.label = "WebApp.apk";
-                    it.size = w.length();
-                    it.modifiedMs = w.lastModified();
-                    it.local = w;
-                    it.latest = true;
-                    out.add(it);
-                }
-            }
-        } catch (Exception ignored) { }
-
         List<ApkItem> downloads = new ArrayList<>();
         if (Build.VERSION.SDK_INT >= 29) {
-            // 2a) Android 10+ — Downloads/SP WEB OS ko MediaStore se padho
+            // Android 10+ — Downloads/SP WEB OS ko MediaStore se padho.
+            // RELATIVE_PATH par "%" wala prefix match sub-folders ko bhi
+            // pakad leta hai (purani seedhi files bhi, naye app folders bhi).
             Cursor c = null;
             try {
                 Uri coll = MediaStore.Downloads.EXTERNAL_CONTENT_URI;
@@ -782,21 +1279,12 @@ public class MainActivity extends Activity {
                 if (c != null) c.close();
             }
         } else {
-            // 2b) Purane Android — public Downloads folder seedha padho
+            // Purane Android — public Downloads folder seedha padho
+            // (SP WEB OS ke andar ke app sub-folders samet).
             try {
                 File dir = new File(Environment.getExternalStoragePublicDirectory(
                         Environment.DIRECTORY_DOWNLOADS), "SP WEB OS");
-                File[] fs = dir.listFiles((d, n) -> n.toLowerCase(Locale.ROOT).endsWith(".apk"));
-                if (fs != null) {
-                    for (File f : fs) {
-                        ApkItem it = new ApkItem();
-                        it.label = f.getName();
-                        it.size = f.length();
-                        it.modifiedMs = f.lastModified();
-                        it.local = f;
-                        downloads.add(it);
-                    }
-                }
+                collectDownloadFiles(dir, "", ".apk", null, downloads);
             } catch (Exception ignored) { }
         }
         downloads.sort((a, b) -> Long.compare(b.modifiedMs, a.modifiedMs));
@@ -840,8 +1328,7 @@ public class MainActivity extends Activity {
         row.setPadding(dp(12), dp(10), dp(12), dp(10));
 
         TextView name = new TextView(this);
-        name.setText((it.latest ? "🆕 " : "📦 ")
-                + it.label.replaceAll("(?i)\\.apk$", ""));
+        name.setText("📦 " + it.label.replaceAll("(?i)\\.apk$", ""));
         name.setTextSize(15);
         name.setTextColor(DARK_TEXT);
         name.setTypeface(null, Typeface.BOLD);
@@ -849,7 +1336,7 @@ public class MainActivity extends Activity {
 
         TextView meta = new TextView(this);
         meta.setText(fmtSize(it.size) + " • " + fmtDate(it.modifiedMs)
-                + (it.latest ? " • Latest build" : " • Downloads/SP WEB OS"));
+                + " • Downloads/SP WEB OS");
         meta.setTextSize(12);
         meta.setTextColor(GREY_TEXT);
         row.addView(meta);
@@ -886,7 +1373,7 @@ public class MainActivity extends Activity {
         return row;
     }
 
-    /** MediaStore APK: system installer intent. Local file (latest build):
+    /** MediaStore APK: system installer intent. Local file (purana Android):
      *  maujooda PackageInstaller wala install() hi istemaal hota hai. */
     private void openApk(ApkItem it) {
         if (it.uri != null) {
@@ -925,9 +1412,8 @@ public class MainActivity extends Activity {
     private void confirmDeleteApk(final ApkItem it) {
         new AlertDialog.Builder(this)
                 .setTitle("🗑️ Delete karo?")
-                .setMessage(it.label + "\nYe APK "
-                        + (it.latest ? "app ke folder se" : "Downloads/SP WEB OS folder se")
-                        + " hat jayega. Install hua app safe rahega.")
+                .setMessage(it.label + "\nYe APK Downloads/SP WEB OS folder se "
+                        + "hat jayega. Install hua app safe rahega.")
                 .setPositiveButton("Delete", (dialog, which) -> deleteApk(it))
                 .setNegativeButton("Cancel", null)
                 .show();
@@ -987,6 +1473,44 @@ public class MainActivity extends Activity {
 
     private String typedName() {
         return nameBox.getText().toString().trim();
+    }
+
+    // ---------------------------------------------------------- templates (v5.1)
+
+    /** Template chunna: button highlight + URL field dikhana/chhupana +
+     *  choice yaad rakhna. */
+    private void selectTemplate(String kind) {
+        templateKind = kind;
+        getSharedPreferences(PREFS_NAME, MODE_PRIVATE).edit()
+                .putString(PREF_TEMPLATE_KIND, kind).apply();
+        if (templateBtns != null) {
+            for (int i = 0; i < TEMPLATE_KINDS.length; i++) {
+                boolean sel = TEMPLATE_KINDS[i].equals(kind);
+                templateBtns[i].setBackground(
+                        roundedBg(sel ? PINK : CARD_BG, 10, sel ? 0 : BORDER));
+                templateBtns[i].setTextColor(sel ? 0xFFFFFFFF : DARK_TEXT);
+                templateBtns[i].setTypeface(null, sel ? Typeface.BOLD : Typeface.NORMAL);
+            }
+        }
+        if (urlBox != null) {
+            urlBox.setVisibility("url".equals(kind) ? View.VISIBLE : View.GONE);
+        }
+    }
+
+    private static String templateLabel(String kind) {
+        for (int i = 0; i < TEMPLATE_KINDS.length; i++) {
+            if (TEMPLATE_KINDS[i].equals(kind)) return TEMPLATE_LABELS[i];
+        }
+        return kind;
+    }
+
+    /** Bundled asset maujood hai ya nahi (template APKs ke liye). */
+    private boolean assetExists(String name) {
+        try (InputStream in = getAssets().open(name)) {
+            return true;
+        } catch (Exception e) {
+            return false;
+        }
     }
 
     // ---------------------------------------------------------- app name sources
@@ -1064,39 +1588,7 @@ public class MainActivity extends Activity {
         return dir;
     }
 
-    private void saveToLibrary(byte[] html, String baseName) {
-        try {
-            String safe = baseName.replaceAll("[\\\\/:*?\"<>|\\s]+", "_");
-            if (safe.isEmpty()) safe = "html";
-            if (safe.length() > 40) safe = safe.substring(0, 40);
-            String stamp = new SimpleDateFormat("yyyyMMdd-HHmmss", Locale.ROOT).format(new Date());
-            File f = new File(libraryDir(), safe + "_" + stamp + ".html");
-            try (OutputStream out = new FileOutputStream(f)) {
-                out.write(html);
-            }
-        } catch (Exception ignored) {
-            // Library save fail ho jaye to bhi build nahi rukna chahiye.
-        }
-    }
 
-    private void showLibrary() {
-        File[] files = libraryDir().listFiles((d, n) -> n.endsWith(".html"));
-        if (files == null || files.length == 0) {
-            Toast.makeText(this, "Library khaali hai — pehle ek APK banao, HTML yahan save ho jayega",
-                    Toast.LENGTH_LONG).show();
-            return;
-        }
-        Arrays.sort(files, (a, b) -> Long.compare(b.lastModified(), a.lastModified()));
-        String[] labels = new String[files.length];
-        for (int i = 0; i < files.length; i++) {
-            labels[i] = files[i].getName() + "  (" + (files[i].length() / 1024) + " KB)";
-        }
-        new AlertDialog.Builder(this)
-                .setTitle("📚 Saved HTML — ek chuno")
-                .setItems(labels, (dialog, which) -> loadFromLibrary(files[which]))
-                .setNegativeButton("Band Karo", null)
-                .show();
-    }
 
     private void loadFromLibrary(File f) {
         try (InputStream in = new FileInputStream(f)) {
@@ -1115,59 +1607,172 @@ public class MainActivity extends Activity {
         }
     }
 
-    // ---------------------------------------------------------- Downloads copy
+    // ---------------------------------------------------------- Downloads output (v5.1)
 
-    /** Bane hue APK ki copy Downloads/SP WEB OS me rakhta hai.
-     *  @return jahan copy hua uska varnan, ya null agar na ho paya ho. */
-    private String copyToDownloads(File apk, String displayLabel) {
-        String fileName = displayLabel.replaceAll("[\\\\/:*?\"<>|]", "_") + ".apk";
+    /** Downloads ke sub-folder ke liye app naam ki safai — bilkul
+     *  packageForName wali (lowercase, sirf a-z0-9, max 30). Isse ek hi
+     *  app ki files hamesha ek hi folder me jama hoti hain. */
+    static String folderNameFor(String label) {
+        String cleaned = (label == null ? "" : label).toLowerCase(Locale.ROOT)
+                .replaceAll("[^a-z0-9]+", "");
+        if (cleaned.length() > 30) cleaned = cleaned.substring(0, 30);
+        if (cleaned.isEmpty()) cleaned = "app";
+        return cleaned;
+    }
+
+    /**
+     * Build ke baad ki files Downloads/SP WEB OS/<AppName>/ me likhta hai —
+     * Auto Save toggles ke hisaab se: <AppName>.html, <AppName>.apk aur
+     * icon.png (jo icon APK ke andar asal me laga hai, wahi nikalkar).
+     * App ke andar kuch save NAHI hota. Status ke liye chhota sa summary
+     * text lautata hai. Background thread se call hota hai.
+     */
+    private String saveOutputsToDownloads(byte[] html, File apk, String displayLabel) {
+        SharedPreferences prefs = getSharedPreferences(PREFS_NAME, MODE_PRIVATE);
+        boolean saveHtml = prefs.getBoolean(PREF_AUTO_SAVE_HTML, true);
+        boolean saveApk = prefs.getBoolean(PREF_AUTO_SAVE_APK, true);
+        boolean saveIcon = prefs.getBoolean(PREF_AUTO_SAVE_ICON, true);
+        if (!saveHtml && !saveApk && !saveIcon) {
+            return "\n📥 Auto Save: teeno toggles OFF hain — Downloads me kuch save nahi hua.";
+        }
+        String folder = folderNameFor(displayLabel);
+        List<String> done = new ArrayList<>();
+        List<String> failed = new ArrayList<>();
+        if (saveHtml && html != null) { // URL apps ke paas HTML hota hi nahi
+            if (writeToDownloads(folder, folder + ".html", "text/html", html, null)) {
+                done.add(folder + ".html");
+            } else {
+                failed.add(folder + ".html");
+            }
+        }
+        if (saveApk) {
+            if (writeToDownloads(folder, folder + ".apk",
+                    "application/vnd.android.package-archive", null, apk)) {
+                done.add(folder + ".apk");
+            } else {
+                failed.add(folder + ".apk");
+            }
+        }
+        if (saveIcon) {
+            byte[] icon = ApkMaker.extractIconPng(apk);
+            if (icon != null) {
+                if (writeToDownloads(folder, "icon.png", "image/png", icon, null)) {
+                    done.add("icon.png");
+                } else {
+                    failed.add("icon.png");
+                }
+            }
+        }
+        StringBuilder sb = new StringBuilder();
+        if (!done.isEmpty()) {
+            sb.append("\n📥 Save ho gaya — Downloads/SP WEB OS/").append(folder)
+                    .append("/ : ").append(joinStrings(done));
+        }
+        if (!failed.isEmpty()) {
+            sb.append("\n⚠️ Save nahi ho paya: ").append(joinStrings(failed))
+                    .append(" (storage permission check karo)");
+        }
+        return sb.toString();
+    }
+
+    private static String joinStrings(List<String> xs) {
+        StringBuilder b = new StringBuilder();
+        for (int i = 0; i < xs.size(); i++) {
+            if (i > 0) b.append(", ");
+            b.append(xs.get(i));
+        }
+        return b.toString();
+    }
+
+    /** Ek file Downloads/SP WEB OS/<folder>/ me likhta hai. API 29+ par
+     *  MediaStore (purani same-naam wali entry pehle hatakar, taaki
+     *  duplicate "(1)" wali files na banein), API 26-28 par seedhi file. */
+    private boolean writeToDownloads(String folder, String fileName, String mime,
+                                     byte[] data, File srcFile) {
         try {
             if (Build.VERSION.SDK_INT >= 29) {
-                return copyToDownloadsModern(apk, fileName);
+                String relPath = Environment.DIRECTORY_DOWNLOADS + "/SP WEB OS/" + folder;
+                deleteExistingDownload(relPath + "/", fileName);
+                ContentValues cv = new ContentValues();
+                cv.put(MediaStore.Downloads.DISPLAY_NAME, fileName);
+                cv.put(MediaStore.Downloads.MIME_TYPE, mime);
+                cv.put(MediaStore.Downloads.RELATIVE_PATH, relPath);
+                cv.put(MediaStore.Downloads.IS_PENDING, 1);
+                Uri uri = getContentResolver().insert(
+                        MediaStore.Downloads.EXTERNAL_CONTENT_URI, cv);
+                if (uri == null) return false;
+                try (OutputStream out = getContentResolver().openOutputStream(uri)) {
+                    if (out == null) {
+                        try { getContentResolver().delete(uri, null, null); }
+                        catch (Exception ignored) { }
+                        return false;
+                    }
+                    writeBytesOrFile(out, data, srcFile);
+                } catch (Exception e) {
+                    try { getContentResolver().delete(uri, null, null); }
+                    catch (Exception ignored) { }
+                    return false;
+                }
+                ContentValues done = new ContentValues();
+                done.put(MediaStore.Downloads.IS_PENDING, 0);
+                getContentResolver().update(uri, done, null, null);
+                return true;
             }
+            // API 26-28: seedhi file (WRITE_EXTERNAL_STORAGE chahiye)
             if (checkSelfPermission(Manifest.permission.WRITE_EXTERNAL_STORAGE)
                     != PackageManager.PERMISSION_GRANTED) {
-                requestPermissions(new String[]{Manifest.permission.WRITE_EXTERNAL_STORAGE},
-                        REQ_WRITE_PERM);
-                return null;
+                runOnUiThread(() -> requestPermissions(
+                        new String[]{Manifest.permission.WRITE_EXTERNAL_STORAGE},
+                        REQ_WRITE_PERM));
+                return false;
             }
             File dir = new File(Environment.getExternalStoragePublicDirectory(
-                    Environment.DIRECTORY_DOWNLOADS), "SP WEB OS");
+                    Environment.DIRECTORY_DOWNLOADS), "SP WEB OS/" + folder);
             //noinspection ResultOfMethodCallIgnored
             dir.mkdirs();
             File dest = new File(dir, fileName);
-            copyFile(apk, dest);
-            return dest.getAbsolutePath();
+            try (OutputStream out = new FileOutputStream(dest)) {
+                writeBytesOrFile(out, data, srcFile);
+            }
+            return true;
         } catch (Exception e) {
-            return null;
+            return false;
         }
     }
 
-    private String copyToDownloadsModern(File apk, String fileName) throws Exception {
-        ContentValues cv = new ContentValues();
-        cv.put(MediaStore.Downloads.DISPLAY_NAME, fileName);
-        cv.put(MediaStore.Downloads.MIME_TYPE, "application/vnd.android.package-archive");
-        cv.put(MediaStore.Downloads.RELATIVE_PATH,
-                Environment.DIRECTORY_DOWNLOADS + "/SP WEB OS");
-        cv.put(MediaStore.Downloads.IS_PENDING, 1);
-        Uri uri = getContentResolver().insert(MediaStore.Downloads.EXTERNAL_CONTENT_URI, cv);
-        if (uri == null) return null;
-        try (InputStream in = new FileInputStream(apk);
-             OutputStream out = getContentResolver().openOutputStream(uri)) {
-            if (out == null) return null;
-            byte[] buf = new byte[16384];
-            int n;
-            while ((n = in.read(buf)) != -1) out.write(buf, 0, n);
+    /** Same folder + same naam wali purani MediaStore entry hatata hai,
+     *  taaki nayi file usi naam se bane (duplicate "(1)" na bane). */
+    private void deleteExistingDownload(String relPathWithSlash, String fileName) {
+        Cursor c = null;
+        try {
+            Uri coll = MediaStore.Downloads.EXTERNAL_CONTENT_URI;
+            String sel = MediaStore.Downloads.RELATIVE_PATH + "=? AND "
+                    + MediaStore.Downloads.DISPLAY_NAME + "=?";
+            c = getContentResolver().query(coll,
+                    new String[]{MediaStore.Downloads._ID}, sel,
+                    new String[]{relPathWithSlash, fileName}, null);
+            if (c != null) {
+                int idI = c.getColumnIndexOrThrow(MediaStore.Downloads._ID);
+                while (c.moveToNext()) {
+                    try {
+                        getContentResolver().delete(
+                                ContentUris.withAppendedId(coll, c.getLong(idI)), null, null);
+                    } catch (Exception ignored) { }
+                }
+            }
+        } catch (Exception ignored) {
+        } finally {
+            if (c != null) c.close();
         }
-        ContentValues done = new ContentValues();
-        done.put(MediaStore.Downloads.IS_PENDING, 0);
-        getContentResolver().update(uri, done, null, null);
-        return "Downloads/SP WEB OS/" + fileName;
     }
 
-    private static void copyFile(File src, File dest) throws Exception {
-        try (InputStream in = new FileInputStream(src);
-             OutputStream out = new FileOutputStream(dest)) {
+    private static void writeBytesOrFile(OutputStream out, byte[] data, File srcFile)
+            throws Exception {
+        if (data != null) {
+            out.write(data);
+            return;
+        }
+        try (InputStream in = new FileInputStream(srcFile)) {
             byte[] buf = new byte[16384];
             int n;
             while ((n = in.read(buf)) != -1) out.write(buf, 0, n);
@@ -1176,8 +1781,11 @@ public class MainActivity extends Activity {
 
     // ---------------------------------------------------------- custom app icon
 
+    /** Working icon sirf cache me rehta hai (v5.1: app ke andar kuch
+     *  permanent save nahi hota). Build ke baad asal icon APK se nikaal
+     *  kar Downloads me icon.png ki tarah save ho jata hai. */
     private File customIconFile() {
-        return new File(getFilesDir(), "custom_icon.png");
+        return new File(getCacheDir(), "custom_icon.png");
     }
 
     private void refreshIconPreview() {
@@ -1200,15 +1808,29 @@ public class MainActivity extends Activity {
         ws.setJavaScriptEnabled(true);
         ws.setDomStorageEnabled(true);
         wv.addJavascriptInterface(new IconBridge(), "IconBridge");
+        // Keyboard fix (v5.1): WebView ko touch focus milna chahiye, warna
+        // dialog ke andar text box par tap karne se keyboard nahi khulta.
+        wv.setFocusable(true);
+        wv.setFocusableInTouchMode(true);
         int h = (int) (580 * getResources().getDisplayMetrics().density);
         wv.setLayoutParams(new LinearLayout.LayoutParams(
                 LinearLayout.LayoutParams.MATCH_PARENT, h));
         wv.loadUrl("file:///android_asset/icon_maker.html");
-        new AlertDialog.Builder(this)
+        AlertDialog dialog = new AlertDialog.Builder(this)
                 .setTitle("\uD83C\uDFA8 App Icon Banao")
                 .setView(wv)
                 .setNegativeButton("Band Karo", null)
-                .show();
+                .create();
+        dialog.show();
+        // Dialog window ko IME (keyboard) allow karna bhi zaroori hai —
+        // SOFT_INPUT_ADJUST_RESIZE ke bina WebView ke input focus to le
+        // lete hain, lekin keyboard upar nahi aata.
+        if (dialog.getWindow() != null) {
+            dialog.getWindow().setSoftInputMode(
+                    WindowManager.LayoutParams.SOFT_INPUT_ADJUST_RESIZE);
+        }
+        wv.requestFocus();
+        wv.requestFocusFromTouch();
     }
 
     /** icon_maker.html ka JavaScript bridge: design kiya hua icon save/clear. */
@@ -1265,9 +1887,11 @@ public class MainActivity extends Activity {
     protected void onActivityResult(int requestCode, int resultCode, Intent data) {
         super.onActivityResult(requestCode, resultCode, data);
         if (requestCode == REQ_APK_DELETE) {
-            // MediaStore delete ka system permission dialog wapas aaya —
-            // user ne haan kaha ho to file system ne khud delete kar di hogi.
+            // MediaStore delete/rename ka system permission dialog wapas
+            // aaya — user ne haan kaha ho to badlav ho gaya hoga; dono
+            // lists tazaa kar do (APKs + HTMLs, jo bhi tha).
             refreshApkList();
+            refreshHtmlList();
             return;
         }
         if (requestCode == REQ_PICK_HTML && resultCode == RESULT_OK && data != null) {
@@ -1299,32 +1923,67 @@ public class MainActivity extends Activity {
     }
 
     private void build() {
-        byte[] html = currentHtml();
-        if (html == null || html.length == 0) {
-            Toast.makeText(this, "Pehle HTML file chuno ya code paste karo", Toast.LENGTH_LONG).show();
-            return;
+        final boolean isUrl = "url".equals(templateKind);
+        final byte[] html;
+        final String urlText;
+        if (isUrl) {
+            String u = urlBox.getText().toString().trim();
+            if (u.isEmpty()) {
+                Toast.makeText(this, "Pehle website ka URL likho", Toast.LENGTH_LONG).show();
+                return;
+            }
+            if (!u.startsWith("http://") && !u.startsWith("https://")) u = "https://" + u;
+            urlText = u;
+            html = null;
+        } else {
+            html = currentHtml();
+            if (html == null || html.length == 0) {
+                Toast.makeText(this, "Pehle HTML file chuno ya code paste karo",
+                        Toast.LENGTH_LONG).show();
+                return;
+            }
+            urlText = null;
         }
         String[] eff = effectiveName();
         final String label = eff == null ? null : eff[0];
         final String pkg = eff == null ? null : packageForName(eff[0]);
         final String nameSource = eff == null ? "default" : eff[1];
-        String libBase = label != null ? label
-                : (pickedName != null ? pickedName.replaceAll("\\.html?$", "") : "pasted-code");
-        saveToLibrary(html, libBase);
         final byte[] iconBytes = readCustomIcon();
+        final String kind = templateKind;
+
+        // Kaunsi bundled template file istemaal hogi: pehle kind wali,
+        // Default ke liye purani template.apk bhi chalegi (fallback).
+        final String kindAsset = "template_" + kind + ".apk";
+        final String templateAsset;
+        if (assetExists(kindAsset)) {
+            templateAsset = kindAsset;
+        } else if ("default".equals(kind) && assetExists("template.apk")) {
+            templateAsset = "template.apk";
+        } else {
+            setStatus("❌ '" + templateLabel(kind) + "' template is build me nahi mila.\n"
+                    + "SP WEB OS ka latest version install karke phir try karo.");
+            return;
+        }
+
         setStatus("APK ban raha hai... ⏳");
         installBtn.setEnabled(false);
         new Thread(() -> {
             try {
-                builtApk = ApkMaker.buildApk(this, html, label, pkg, iconBytes);
+                Map<String, byte[]> swaps = new HashMap<>();
+                if (isUrl) {
+                    swaps.put("assets/url.txt",
+                            (urlText + "\n").getBytes(StandardCharsets.UTF_8));
+                } else {
+                    swaps.put("assets/index.html", html);
+                }
+                builtApk = ApkMaker.buildApk(this, templateAsset, swaps, label, pkg, iconBytes);
                 builtLabel = label == null ? "Web App" : label;
                 builtPackage = pkg == null ? ApkPatcher.OLD_PACKAGE : pkg;
-                String dl = copyToDownloads(builtApk, builtLabel);
-                setStatus("✅ APK taiyaar!\nApp: " + builtLabel + " (naam: " + nameSource + ")\nPackage: " + builtPackage
-                        + "\nPath: " + builtApk.getAbsolutePath()
-                        + (dl != null ? "\n📥 Downloads me copy: " + dl
-                                      : "\n(Downloads copy nahi ho paya — APK upar wale path par hai)")
-                        + "\n📚 HTML library me save ho gaya."
+                String saved = saveOutputsToDownloads(html, builtApk, builtLabel);
+                setStatus("✅ APK taiyaar!\nApp: " + builtLabel + " (naam: " + nameSource + ")"
+                        + "\nTemplate: " + templateLabel(kind) + (isUrl ? " — " + urlText : "")
+                        + "\nPackage: " + builtPackage
+                        + saved
                         + (iconBytes != null ? "\n🎨 Custom icon lagaya gaya." : "")
                         + "\nAb 'Install Karo' dabao.");
                 runOnUiThread(() -> installBtn.setEnabled(true));
@@ -1365,7 +2024,7 @@ public class MainActivity extends Activity {
             setStatus("Installer khul raha hai... 📲");
         } catch (Exception e) {
             setStatus("❌ Install shuru nahi hua: " + e.getMessage()
-                    + "\nAPK Downloads/SP WEB OS folder me bhi hai, wahan se bhi install kar sakte ho.");
+                    + "\nAPK '📦 APKs' tab me bhi milega (Auto Save Apks ON ho to) — wahan se bhi install kar sakte ho.");
         }
     }
 
