@@ -11,7 +11,7 @@
   h2 { margin:2px 0 4px; font-size:19px; color:var(--pink-dark); }
   .hint { font-size:12px; color:#666; margin:0 0 10px; }
   label.lbl { display:block; font-size:13px; font-weight:bold; margin:14px 0 6px; }
-  input[type="text"] { width:100%; padding:9px; font-size:16px; border:1px solid var(--line); border-radius:8px; }
+  input[type="text"] { width:100%; padding:9px; font-size:16px; border:1px solid var(--line); border-radius:8px; -webkit-user-select:text; user-select:text; touch-action:manipulation; }
   select { width:100%; padding:9px; font-size:15px; border:1px solid var(--line); border-radius:8px; background:#fff; }
   input[type="range"] { width:100%; }
   input[type="color"] { width:56px; height:38px; border:1px solid var(--line); border-radius:8px; background:#fff; padding:2px; vertical-align:middle; }
@@ -71,7 +71,8 @@
 <input type="range" id="patSize" min="14" max="90" value="42">
 
 <label class="lbl">Icon पर text</label>
-<input type="text" id="iconText" value="W" maxlength="14" placeholder="जैसे: SP, Study, 📚">
+<input type="text" id="iconText" value="W" maxlength="14" placeholder="जैसे: SP, Study, 📚"
+       inputmode="text" autocomplete="off" autocapitalize="off" spellcheck="false" enterkeyhint="done">
 
 <div class="row" style="margin-top:8px;">
   <span style="font-size:13px;">Text रंग:</span>
@@ -195,6 +196,12 @@
       el.addEventListener('input', draw);
       el.addEventListener('change', draw);
     });
+
+  // Keyboard fix (v5.1): kuchh WebViews me tap par input focus to le leta
+  // hai par keyboard nahi khulta — user gesture ke andar explicit focus()
+  // bulane se IME reliably khulta hai.
+  iconText.addEventListener('click', function () { iconText.focus(); });
+  iconText.addEventListener('touchend', function () { setTimeout(function () { iconText.focus(); }, 60); });
 
   $('saveBtn').onclick = function () {
     if (window.IconBridge && IconBridge.saveIcon) {
