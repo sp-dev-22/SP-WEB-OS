@@ -1,0 +1,103 @@
+{
+ "version": 1,
+ "scripts": [
+  {
+   "id": "yt-adskip",
+   "title": "🎬 YouTube Ad Skip Pro",
+   "desc": "YouTube ads auto-skip / fast-forward, overlay ads band, 'continue watching' auto-OK",
+   "worksOn": "youtube",
+   "js": "(function(){try{\nif(window.__spYtAdskip)return;window.__spYtAdskip=1;\nvar mutedByUs=false,wasMuted=false;\nfunction findVideo(){return document.querySelector('video.html5-main-video')||document.querySelector('video');}\nfunction tick(){\n  try{\n    var skip=document.querySelector('.ytp-skip-ad-button,.ytp-ad-skip-button,.ytp-skip-ad-button-modern,.ytp-ad-skip-button-container button');\n    if(skip){skip.click();}\n    var player=document.querySelector('.html5-video-player');\n    var v=findVideo();\n    if(player&&v){\n      if(player.classList.contains('ad-showing')||player.classList.contains('ad-interrupting')){\n        if(!mutedByUs){wasMuted=v.muted;try{v.muted=true;}catch(e){}mutedByUs=true;}\n        try{v.playbackRate=16;}catch(e){}\n        if(v.duration&&isFinite(v.duration)&&v.currentTime<v.duration-0.25){try{v.currentTime=v.duration-0.2;}catch(e){}}\n      }else if(mutedByUs){\n        try{v.muted=wasMuted;}catch(e){}\n        mutedByUs=false;\n        try{if(v.playbackRate>2)v.playbackRate=1;}catch(e){}\n      }\n    }\n    var ov=document.querySelector('.ytp-ad-overlay-close-button');\n    if(ov)ov.click();\n    var dlg=document.querySelector('yt-confirm-dialog-renderer');\n    if(dlg){var b=dlg.querySelector('#confirm-button');if(b)b.click();}\n  }catch(e){}\n}\nsetInterval(tick,400);\n}catch(e){}})();",
+   "css": "ytd-ad-slot-renderer,ytd-display-ad-renderer,ytd-promoted-sparkles-web-renderer,ytm-ad-slot-renderer,ytm-promoted-sparkles-web-renderer,#player-ads,ytd-banner-promo-renderer{display:none!important}"
+  },
+  {
+   "id": "ad-cleaner",
+   "title": "🧹 Ad Slots Cleaner",
+   "desc": "Sab websites par ad wale dabbe, banner aur sponsored boxes chhupata hai (CSS)",
+   "worksOn": "sites",
+   "js": "",
+   "css": "ins.adsbygoogle,[id*=\"google_ads\"],[class*=\"adsbygoogle\"],[id^=\"div-gpt-ad\"],.gpt-ad,.ad-container,.ads-container,.ad-slot,.banner-ad,.taboola,.outbrain,[class*=\"sponsored-\"],iframe[src*=\"doubleclick.net\"],iframe[src*=\"googlesyndication.com\"],iframe[src*=\"adsterra\"],iframe[src*=\"popads\"]{display:none!important}"
+  },
+  {
+   "id": "shorts-hider",
+   "title": "🙈 Shorts Hider",
+   "desc": "YouTube Shorts chhupata hai; shorts wala link normal video ki tarah khulta hai",
+   "worksOn": "youtube",
+   "js": "(function(){try{\nif(window.__spShortsHider)return;window.__spShortsHider=1;\nfunction fix(){\n  try{\n    var m=location.pathname.match(/^\\/shorts\\/([\\w-]{6,})/);\n    if(m){location.replace('/watch?v='+m[1]);return;}\n    var as=document.querySelectorAll('a[href^=\"/shorts/\"]');\n    for(var i=0;i<as.length;i++){\n      var mm=(as[i].getAttribute('href')||'').match(/^\\/shorts\\/([\\w-]{6,})/);\n      if(mm)as[i].setAttribute('href','/watch?v='+mm[1]);\n    }\n  }catch(e){}\n}\nfix();\nsetInterval(fix,1500);\n}catch(e){}})();",
+   "css": "ytd-rich-shelf-renderer[is-shorts],ytd-reel-shelf-renderer,ytm-reel-shelf-renderer,ytd-guide-entry-renderer a[title=\"Shorts\"],ytm-pivot-bar-renderer [tab-identifier=\"FEshorts\"]{display:none!important}"
+  },
+  {
+   "id": "bg-play",
+   "title": "📺 Background Play",
+   "desc": "App band karke ya dusra app kholkar bhi video/audio chalta rehta hai (native power)",
+   "worksOn": "all",
+   "js": "(function(){try{\nif(window.__spBgPlay)return;window.__spBgPlay=1;\nfunction setup(){\n  try{\n    if(!('mediaSession' in navigator))return;\n    var v=document.querySelector('video,audio');\n    if(v){try{navigator.mediaSession.playbackState=v.paused?'paused':'playing';}catch(e){}}\n    if(window.MediaMetadata&&!navigator.mediaSession.metadata){\n      try{navigator.mediaSession.metadata=new MediaMetadata({title:(document.title||'SP Web App'),artist:location.hostname});}catch(e){}\n    }\n  }catch(e){}\n}\nsetup();\nsetInterval(setup,3000);\n}catch(e){}})();",
+   "css": "",
+   "power": "bgPlay"
+  },
+  {
+   "id": "pip-mode",
+   "title": "🖼️ PiP Mode",
+   "desc": "Video chhoti floating window me chalti hai — dusre apps ke upar (native power)",
+   "worksOn": "all",
+   "js": "",
+   "css": "",
+   "power": "pip"
+  },
+  {
+   "id": "video-download",
+   "title": "⬇️ Video Download Button",
+   "desc": "Page ke video par ⬇ button — direct video file download hoti hai (streaming sites par kaam nahi karega)",
+   "worksOn": "sites",
+   "js": "(function(){try{\nif(window.__spVidDl)return;window.__spVidDl=1;\nfunction toast(msg){\n  var t=document.getElementById('__sp_dl_toast');\n  if(!t){t=document.createElement('div');t.id='__sp_dl_toast';t.style.cssText='position:fixed;left:50%;bottom:150px;transform:translateX(-50%);background:rgba(0,0,0,.88);color:#fff;padding:10px 16px;border-radius:20px;font-size:14px;z-index:2147483647;max-width:86%;text-align:center;font-family:sans-serif;';if(document.body)document.body.appendChild(t);}\n  if(!t)return;\n  t.textContent=msg;t.style.display='block';\n  clearTimeout(t.__h);t.__h=setTimeout(function(){t.style.display='none';},2600);\n}\nfunction bestVideo(){\n  var vs=document.querySelectorAll('video'),best=null,area=-1;\n  for(var i=0;i<vs.length;i++){var a=(vs[i].offsetWidth||0)*(vs[i].offsetHeight||0);if(a>=area){area=a;best=vs[i];}}\n  return best;\n}\nvar btn=document.createElement('div');\nbtn.textContent='⬇️';\nbtn.setAttribute('style','position:fixed;right:14px;bottom:76px;width:46px;height:46px;line-height:46px;text-align:center;font-size:22px;background:rgba(233,30,99,.93);border-radius:50%;z-index:2147483646;box-shadow:0 2px 8px rgba(0,0,0,.4);cursor:pointer;');\nbtn.addEventListener('click',function(){\n  var v=bestVideo();\n  var src=v?(v.currentSrc||v.src||''):'';\n  if(!src){toast('Video nahi mila — pehle video chalao');return;}\n  if(src.indexOf('http')===0){\n    var a=document.createElement('a');a.href=src;a.setAttribute('download','');document.body.appendChild(a);a.click();a.remove();\n    toast('Download shuru ho raha hai…');\n  }else{\n    toast('इस site पर direct download possible नहीं है (streaming video)');\n  }\n});\nfunction mount(){if(document.body&&!btn.isConnected)document.body.appendChild(btn);}\nmount();\nsetInterval(mount,2000);\n}catch(e){}})();",
+   "css": ""
+  },
+  {
+   "id": "audio-only",
+   "title": "🎧 Audio Only (YouTube)",
+   "desc": "Screen kaali, sirf awaaz — data aur battery ki bachat",
+   "worksOn": "youtube",
+   "js": "(function(){try{\nif(window.__spAudioOnly)return;window.__spAudioOnly=1;\ndocument.documentElement.classList.add('__sp_audio_only');\nvar note=document.createElement('div');\nnote.id='__sp_audio_note';\nnote.setAttribute('style','position:fixed;left:0;top:0;right:0;bottom:0;background:#000;color:#eee;z-index:2147483000;display:flex;align-items:center;justify-content:center;font-size:17px;padding:24px;text-align:center;pointer-events:none;font-family:sans-serif;');\nnote.textContent='🎧 Audio Only — sirf awaaz chal rahi hai (data + battery bachat). Band karne ke liye • panel se script OFF karo.';\nfunction mount(){if(document.body&&!note.isConnected)document.body.appendChild(note);}\nmount();\nsetInterval(mount,2000);\n}catch(e){}})();",
+   "css": "html.__sp_audio_only video{opacity:0!important}"
+  },
+  {
+   "id": "speed-control",
+   "title": "⏩ Speed Controller",
+   "desc": "Kisi bhi video/audio ki speed 0.5x–3x badlo (floating chip)",
+   "worksOn": "sites",
+   "js": "(function(){try{\nif(window.__spSpeedCtl)return;window.__spSpeedCtl=1;\nvar rates=[0.5,0.75,1,1.25,1.5,2,3],idx=2;\nvar chip=document.createElement('div');\nchip.setAttribute('style','position:fixed;right:14px;bottom:132px;padding:8px 13px;background:rgba(0,0,0,.8);color:#fff;border-radius:18px;font-size:14px;z-index:2147483646;cursor:pointer;user-select:none;font-family:sans-serif;');\nfunction label(){chip.textContent='⏩ '+rates[idx]+'x';}\nfunction apply(){var vs=document.querySelectorAll('video,audio');for(var i=0;i<vs.length;i++){try{vs[i].playbackRate=rates[idx];}catch(e){}}}\nchip.addEventListener('click',function(){idx=(idx+1)%rates.length;label();apply();});\nfunction mount(){if(document.body&&!chip.isConnected)document.body.appendChild(chip);}\nmount();label();\nsetInterval(function(){mount();apply();},2500);\n}catch(e){}})();",
+   "css": ""
+  },
+  {
+   "id": "popup-blocker",
+   "title": "🛡️ Popup & Redirect Blocker",
+   "desc": "Bina tap ke khulne wale popup/redirect aur page-chhodne wale trap rokta hai",
+   "worksOn": "sites",
+   "js": "(function(){try{\nif(window.__spPopupBlock)return;window.__spPopupBlock=1;\nvar lastTap=0;\nfunction mark(){lastTap=Date.now();}\ndocument.addEventListener('pointerdown',mark,true);\ndocument.addEventListener('touchstart',mark,true);\ndocument.addEventListener('click',mark,true);\nvar origOpen=window.open;\nwindow.open=function(){\n  if(Date.now()-lastTap<500){return origOpen.apply(window,arguments);}\n  return null;\n};\ntry{\n  var origAdd=EventTarget.prototype.addEventListener;\n  EventTarget.prototype.addEventListener=function(type,fn,opts){\n    if(type==='beforeunload')return;\n    return origAdd.call(this,type,fn,opts);\n  };\n}catch(e){}\n}catch(e){}})();",
+   "css": ""
+  },
+  {
+   "id": "reader-mode",
+   "title": "📖 Reader Mode",
+   "desc": "Article ko saaf karke padhne layak banata hai (floating 📖 button ON/OFF)",
+   "worksOn": "sites",
+   "js": "(function(){try{\nif(window.__spReader)return;window.__spReader=1;\nvar btn=document.createElement('div');\nbtn.textContent='📖';\nbtn.setAttribute('style','position:fixed;left:14px;bottom:76px;width:46px;height:46px;line-height:46px;text-align:center;font-size:22px;background:rgba(63,81,181,.93);border-radius:50%;z-index:2147483646;box-shadow:0 2px 8px rgba(0,0,0,.4);cursor:pointer;');\nbtn.addEventListener('click',function(){document.documentElement.classList.toggle('__sp_reader');});\nfunction mount(){if(document.body&&!btn.isConnected)document.body.appendChild(btn);}\nmount();\nsetInterval(mount,2000);\n}catch(e){}})();",
+   "css": "html.__sp_reader body{background:#fff!important;color:#111!important}\nhtml.__sp_reader header,html.__sp_reader nav,html.__sp_reader aside,html.__sp_reader footer,html.__sp_reader iframe,html.__sp_reader [class*=\"sidebar\"],html.__sp_reader [class*=\"popup\"],html.__sp_reader [id*=\"cookie\"]{display:none!important}\nhtml.__sp_reader article,html.__sp_reader main,html.__sp_reader [class*=\"article\"],html.__sp_reader [class*=\"content\"]{max-width:700px!important;margin-left:auto!important;margin-right:auto!important;font-size:19px!important;line-height:1.75!important;padding-left:14px!important;padding-right:14px!important}\nhtml.__sp_reader img{max-width:100%!important;height:auto!important}"
+  },
+  {
+   "id": "night-dimmer",
+   "title": "🌗 Night Dimmer",
+   "desc": "Raat ke liye screen par halki kaali parat — chamak kam, aankhein aaram (🌗 button se level)",
+   "worksOn": "all",
+   "js": "(function(){try{\nif(window.__spDimmer)return;window.__spDimmer=1;\nvar levels=[0,0.2,0.35,0.5,0.65],idx=2;\nvar ov=document.createElement('div');\nov.setAttribute('style','position:fixed;left:0;top:0;right:0;bottom:0;background:#000;pointer-events:none;z-index:2147483000;');\nfunction apply(){ov.style.opacity=String(levels[idx]);}\nvar btn=document.createElement('div');\nbtn.textContent='🌗';\nbtn.setAttribute('style','position:fixed;left:14px;bottom:132px;width:46px;height:46px;line-height:46px;text-align:center;font-size:21px;background:rgba(0,0,0,.78);border-radius:50%;z-index:2147483646;cursor:pointer;');\nbtn.addEventListener('click',function(){idx=(idx+1)%levels.length;apply();});\nfunction mount(){if(document.body){if(!ov.isConnected)document.body.appendChild(ov);if(!btn.isConnected)document.body.appendChild(btn);}apply();}\nmount();apply();\nsetInterval(mount,2500);\n}catch(e){}})();",
+   "css": ""
+  },
+  {
+   "id": "sleep-timer",
+   "title": "💤 Sleep Timer",
+   "desc": "15/30/45/60 minute baad chal raha media apne aap ruk jata hai",
+   "worksOn": "all",
+   "js": "(function(){try{\nif(window.__spSleep)return;window.__spSleep=1;\nvar opts=[0,15,30,45,60],idx=0,timer=null;\nfunction toast(msg){\n  var t=document.getElementById('__sp_sleep_toast');\n  if(!t){t=document.createElement('div');t.id='__sp_sleep_toast';t.style.cssText='position:fixed;left:50%;bottom:150px;transform:translateX(-50%);background:rgba(0,0,0,.88);color:#fff;padding:10px 16px;border-radius:20px;font-size:14px;z-index:2147483647;max-width:86%;text-align:center;font-family:sans-serif;';if(document.body)document.body.appendChild(t);}\n  if(!t)return;\n  t.textContent=msg;t.style.display='block';\n  clearTimeout(t.__h);t.__h=setTimeout(function(){t.style.display='none';},2800);\n}\nvar btn=document.createElement('div');\nbtn.setAttribute('style','position:fixed;right:14px;bottom:188px;padding:8px 13px;background:rgba(0,0,0,.8);color:#fff;border-radius:18px;font-size:14px;z-index:2147483646;cursor:pointer;user-select:none;font-family:sans-serif;');\nfunction label(){btn.textContent=opts[idx]===0?'💤 OFF':'💤 '+opts[idx]+'m';}\nbtn.addEventListener('click',function(){\n  idx=(idx+1)%opts.length;label();\n  if(timer){clearTimeout(timer);timer=null;}\n  if(opts[idx]>0){\n    toast('💤 '+opts[idx]+' minute baad media ruk jayega');\n    timer=setTimeout(function(){\n      var ms=document.querySelectorAll('video,audio');\n      for(var i=0;i<ms.length;i++){try{ms[i].pause();}catch(e){}}\n      toast('💤 Sleep Timer — media rok diya gaya');\n      idx=0;label();timer=null;\n    },opts[idx]*60*1000);\n  }\n});\nfunction mount(){if(document.body&&!btn.isConnected)document.body.appendChild(btn);}\nmount();label();\nsetInterval(mount,2000);\n}catch(e){}})();",
+   "css": ""
+  }
+ ]
+}
