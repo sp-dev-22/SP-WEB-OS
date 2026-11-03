@@ -36,6 +36,7 @@ import android.webkit.JavascriptInterface;
 import android.webkit.WebSettings;
 import android.webkit.WebView;
 import android.widget.Button;
+import android.widget.CheckBox;
 import android.widget.EditText;
 import android.widget.FrameLayout;
 import android.widget.ImageView;
@@ -63,10 +64,12 @@ import java.util.Map;
 import java.util.regex.Matcher;
 import java.util.regex.Pattern;
 
+import org.json.JSONObject;
+
 /**
  * SP WEB OS — single-file HTML ko phone par hi APK banane wala app.
  * Flow: HTML file chuno ya code paste karo -> app ka naam do (optional)
- * -> template chuno -> "APK Banao" -> "Install Karo".
+ * -> type + features chuno -> "APK Banao" -> "Install Karo".
  * v5.1 policy: app ke andar kuch save NAHI hota. Har build ki files
  * (HTML, APK, icon) Downloads/SP WEB OS/<AppName>/ me jati hain —
  * Settings ke Auto Save toggles ke hisaab se.
@@ -94,12 +97,17 @@ public class MainActivity extends Activity {
     private static final String PREF_AUTO_SAVE_HTML = "auto_save_html";
     private static final String PREF_AUTO_SAVE_APK = "auto_save_apk";
     private static final String PREF_AUTO_SAVE_ICON = "auto_save_icon";
-    private static final String PREF_TEMPLATE_KIND = "template_kind";
-
-    // Templates (v5.1): builder ke andar bandle hue chaar template APK —
-    // template_<kind>.apk assets (CI unhe builder me daalta hai).
-    private static final String[] TEMPLATE_KINDS = {"default", "js3d", "url", "full"};
-    private static final String[] TEMPLATE_LABELS = {"Default", "3D JS", "URL", "Fullscreen"};
+    // Type + Features (v5.3): ek hi template; type aur feature choices
+    // prefs me yaad rehte hain aur har build me assets/config.json
+    // bankar generated app me jaate hain.
+    private static final String PREF_APP_TYPE = "app_type";
+    private static final String PREF_FEAT_FULLSCREEN = "feat_fullscreen";
+    private static final String PREF_FEAT_DARKPAGE = "feat_darkpage";
+    private static final String PREF_FEAT_CUSTOMCODE = "feat_customcode";
+    private static final String PREF_FEAT_ADBLOCK = "feat_adblock";
+    private static final String PREF_FEAT_HISTORY = "feat_history";
+    private static final String PREF_FEAT_GESTURES = "feat_gestures";
+    private static final String PREF_FEAT_3D = "feat_3d";
 
     private boolean darkMode;
     private int DARK_TEXT = 0xFF212121;   // mukhya text
@@ -144,8 +152,12 @@ public class MainActivity extends Activity {
     private EditText codeBox;
     private EditText nameBox;
     private EditText urlBox;
-    private Button[] templateBtns;
-    private String templateKind = "default";
+    private Button[] typeBtns;
+    private String appType = "html";
+    private CheckBox cbFullscreen, cbDarkPage, cbCustomCode;
+    private CheckBox cbAdBlock, cbHistory, cbGestures, cb3d;
+    private LinearLayout customCodeBox;
+    private EditText jsBox, cssBox;
     private Button installBtn;
     private ImageView iconPreview;
     private TextView iconStatus;
@@ -419,27 +431,28 @@ public class MainActivity extends Activity {
         nameBox.addTextChangedListener(previewWatcher);
         updatePackagePreview();
 
-        // ---- Template picker (v5.1): Default / 3D JS / URL / Fullscreen ----
-        root.addView(heading("🧩 Template", 15), lp(12));
-        LinearLayout tplRow = new LinearLayout(this);
-        tplRow.setOrientation(LinearLayout.HORIZONTAL);
-        templateBtns = new Button[TEMPLATE_KINDS.length];
-        for (int i = 0; i < TEMPLATE_KINDS.length; i++) {
-            final String kind = TEMPLATE_KINDS[i];
+        // ---- Type + Features (v5.3): ek hi template; type aur features
+        // config.json me jaakar generated app ka vyavhaar tay karte hain.
+        root.addView(heading("🧩 App Type", 15), lp(12));
+        LinearLayout typeRow = new LinearLayout(this);
+        typeRow.setOrientation(LinearLayout.HORIZONTAL);
+        typeBtns = new Button[2];
+        final String[] typeVals = {"html", "url"};
+        String[] typeLabels = {"📄 HTML App", "🌐 URL App"};
+        for (int i = 0; i < 2; i++) {
+            final String t = typeVals[i];
             Button b = new Button(this);
-            b.setText(TEMPLATE_LABELS[i]);
+            b.setText(typeLabels[i]);
             styleSmall(b);
             b.setTextSize(13);
-            b.setOnClickListener(v -> selectTemplate(kind));
+            b.setOnClickListener(v -> selectType(t));
             LinearLayout.LayoutParams tp = new LinearLayout.LayoutParams(
                     0, LinearLayout.LayoutParams.WRAP_CONTENT, 1f);
             if (i > 0) tp.leftMargin = dp(6);
-            tplRow.addView(b, tp);
-            templateBtns[i] = b;
+            typeRow.addView(b, tp);
+            typeBtns[i] = b;
         }
-        root.addView(tplRow, lp(6));
-        root.addView(bodyText("Default = aam web app • 3D JS = Three.js andar pehle se (games) • "
-                + "URL = website ko app banao • Fullscreen = kiosk style, screen hamesha on"), lp(4));
+        root.addView(typeRow, lp(6));
 
         urlBox = new EditText(this);
         urlBox.setHint("Website ka URL — jaise https://example.com");
@@ -449,10 +462,51 @@ public class MainActivity extends Activity {
         urlBox.setVisibility(View.GONE);
         root.addView(urlBox, lp(8));
 
-        String savedKind = getSharedPreferences(PREFS_NAME, MODE_PRIVATE)
-                .getString(PREF_TEMPLATE_KIND, "default");
-        selectTemplate(savedKind != null && Arrays.asList(TEMPLATE_KINDS).contains(savedKind)
-                ? savedKind : "default");
+        root.addView(heading("✨ Features", 15), lp(12));
+        cbFullscreen = featureCheck(PREF_FEAT_FULLSCREEN, "⛶ Full Screen — सभी apps");
+        root.addView(cbFullscreen, lp(2));
+        cbDarkPage = featureCheck(PREF_FEAT_DARKPAGE, "🌙 Page Dark Mode — सभी apps");
+        root.addView(cbDarkPage, lp(2));
+        cbCustomCode = featureCheck(PREF_FEAT_CUSTOMCODE,
+                "🧩 Custom JS/CSS (Extension) — सभी apps");
+        root.addView(cbCustomCode, lp(2));
+
+        customCodeBox = new LinearLayout(this);
+        customCodeBox.setOrientation(LinearLayout.VERTICAL);
+        jsBox = new EditText(this);
+        jsBox.setHint("JS code (optional) — har page load ke baad chalega");
+        jsBox.setMinLines(3);
+        jsBox.setGravity(Gravity.TOP);
+        jsBox.setTextSize(12);
+        styleField(jsBox);
+        customCodeBox.addView(jsBox, lp(2));
+        cssBox = new EditText(this);
+        cssBox.setHint("CSS code (optional) — page ki styling badlega");
+        cssBox.setMinLines(3);
+        cssBox.setGravity(Gravity.TOP);
+        cssBox.setTextSize(12);
+        styleField(cssBox);
+        customCodeBox.addView(cssBox, lp(6));
+        customCodeBox.setVisibility(View.GONE);
+        root.addView(customCodeBox, lp(4));
+
+        cbAdBlock = featureCheck(PREF_FEAT_ADBLOCK, "🚫 Ad Block — सिर्फ़ URL apps");
+        root.addView(cbAdBlock, lp(2));
+        cbHistory = featureCheck(PREF_FEAT_HISTORY,
+                "🤫 Browse History (secret •) — सिर्फ़ URL apps");
+        root.addView(cbHistory, lp(2));
+        cbGestures = featureCheck(PREF_FEAT_GESTURES, "👆 Swipe Gestures — सिर्फ़ URL apps");
+        root.addView(cbGestures, lp(2));
+        cb3d = featureCheck(PREF_FEAT_3D, "🎮 3D JS Library — सिर्फ़ HTML apps");
+        root.addView(cb3d, lp(2));
+        root.addView(bodyText("Features freely combine hote hain — jitne chaaho "
+                + "ek saath. Jo feature kisi type par nahi chalta, woh us type "
+                + "par apne aap band (OFF) ho jata hai."), lp(4));
+
+        String savedType = getSharedPreferences(PREFS_NAME, MODE_PRIVATE)
+                .getString(PREF_APP_TYPE, "html");
+        selectType("url".equals(savedType) ? "url" : "html");
+        updateCustomCodeVisibility();
 
         Button iconBtn = new Button(this);
         iconBtn.setText("🎨 App Icon Banao");
@@ -502,7 +556,7 @@ public class MainActivity extends Activity {
         LinearLayout root = tabColumn();
         root.addView(heading("⚙️ Settings / Jankari", 20));
 
-        String version = "5.1";
+        String version = "5.3";
         try {
             version = getPackageManager().getPackageInfo(getPackageName(), 0).versionName;
         } catch (Exception ignored) { }
@@ -540,9 +594,12 @@ public class MainActivity extends Activity {
                 "1.  Home tab me HTML file chuno ya code paste karo.\n"
                 + "2.  App ka naam do (optional). Naam se alag Package ID banta hai, "
                 + "taaki kai apps ek saath phone par reh saken. Naam khaali ho to HTML ke "
-                + "<title> ya file ke naam se apne aap ban jata hai.\n"
+                + "<title> ya file ke naam se apne aap ban jata hai. Phir App Type "
+                + "(📄 HTML / 🌐 URL) chuno aur ✨ Features tick karo — features "
+                + "freely combine hote hain.\n"
                 + "3.  Chaho to '🎨 App Icon Banao' se apna icon design karo — background "
-                + "colour, pattern aur text tum khud chunte ho.\n"
+                + "colour aur pattern tum khud chunte ho; purana bana icon 'Saved "
+                + "Icons' se bhi chun sakte ho.\n"
                 + "4.  '🚀 APK Banao' dabao. APK taiyaar hoga aur Auto Save toggles ke "
                 + "hisaab se Downloads me save hoga.\n"
                 + "5.  '📲 Install Karo' dabakar app install karo.\n\n"
@@ -651,16 +708,20 @@ public class MainActivity extends Activity {
                 + "naam aur icon do → '🚀 APK Banao' dabao → '📲 Install Karo' se "
                 + "install karo. Bas, app taiyaar!");
         helpQa(col, "Q2. Apna icon kaise lagayein?",
-                "'🎨 App Icon Banao' dabao → background rang, pattern, apna text "
-                + "aur text ki position (upar / beech / neeche) chuno → '✅ यह icon "
-                + "इस्तेमाल करो' dabakar dialog band karo → phir APK banao. Wahi "
-                + "design launcher par icon banega.");
-        helpQa(col, "Q3. Chaaro templates me kya farak hai?",
-                "Default — aam single-file web app. 3D JS — Three.js library andar "
-                + "pehle se hai, games/3D ke liye (apni file me three.min.js seedha "
-                + "milta hai). URL — kisi website ka pata bharo, wahi app ban "
-                + "jayegi (HTML nahi chahiye). Fullscreen — kiosk style: immersive "
-                + "fullscreen aur screen hamesha on.");
+                "'🎨 App Icon Banao' dabao → background rang aur pattern chuno "
+                + "(13 patterns hain) → '✅ यह icon इस्तेमाल करो' dabakar dialog "
+                + "band karo → phir APK banao. Wahi design launcher par icon "
+                + "banega. Purana bana hua icon lagana ho to dialog ke neeche "
+                + "'🖼️ Saved Icons से चुनो' dabao.");
+        helpQa(col, "Q3. App Type aur Features kya hain?",
+                "Do Type hain: 📄 HTML App (single-file HTML se app) aur 🌐 URL "
+                + "App (website ke URL se app). Type ke neeche ✨ Features ki "
+                + "list hai — jitne chaaho tick karke ek saath laga sakte ho: "
+                + "Full Screen, Page Dark Mode aur Custom JS/CSS teeno type par "
+                + "chalte hain; Ad Block, Browse History aur Swipe Gestures "
+                + "sirf URL apps par; 3D JS Library sirf HTML apps par. Jo "
+                + "feature kisi type par nahi chalta, woh apne aap band ho "
+                + "jata hai.");
         helpQa(col, "Q4. Files kahan save hoti hain? App ke andar kuch kyun nahi?",
                 "v5.1 ki policy: builder app apne andar kuch save NAHI karta. Har "
                 + "app ki files Downloads/SP WEB OS/<AppName>/ folder me milti "
@@ -691,6 +752,30 @@ public class MainActivity extends Activity {
         helpQa(col, "Q10. Dark mode kaise on karoon?",
                 "⚙️ Settings tab → '🌙 Dark Mode' switch ON karo. Poora app dark "
                 + "theme me badal jayega, pink rang waisa hi rahega.");
+        helpQa(col, "Q11. 🧩 Extensions (Custom JS/CSS) kya hai?",
+                "Sach ye hai: asli browser extensions (Chrome wale) WebView "
+                + "apps ke andar NAHI chal sakte — ye Android ki seema hai. "
+                + "Uska built-in badla hai Custom JS/CSS feature: '🧩 Custom "
+                + "JS/CSS' tick karo, JS box me apna JavaScript aur CSS box me "
+                + "apni styling paste karo — woh code har page load ke baad "
+                + "page ke andar chalega. Isse page ka rang-roop badalna, "
+                + "buttons chhupana, chhoti automation — bahut kuch ho sakta "
+                + "hai. Code naa aata ho to AI ko likhne ko kaho aur yahan "
+                + "paste kar do.");
+        helpQa(col, "Q12. 🚫 Ad Block kaise kaam karta hai?",
+                "URL apps me Ad Block ON ho to mashhoor ad/tracker networks "
+                + "(jaise DoubleClick, PopAds, Taboola, Adsterra…) ki requests "
+                + "rok di jati hain — page saaf, halka aur tez banta hai. "
+                + "Note: kabhi-kabhi koi site ad-network par hi nirbhar hoti "
+                + "hai aur ajeeb behave kar sakti hai — aisa ho to us app ko "
+                + "bina Ad Block ke dobara banao.");
+        helpQa(col, "Q13. 🎮 3D JS Library ka istemaal kaise karoon?",
+                "📄 HTML App chuno aur '🎮 3D JS Library' feature ON karo — "
+                + "three.min.js (Three.js) app ke andar pehle se jud jayega. "
+                + "Apni HTML file me bas itni line likho: "
+                + "<script src=\"three.min.js\"></script> — phir THREE wala "
+                + "poora code chalega, bina kuch alag se download kiye, "
+                + "offline bhi.");
 
         col.addView(heading("💡 Tips", 17), lp(18));
         col.addView(bodyText(
@@ -698,9 +783,9 @@ public class MainActivity extends Activity {
                 + "Bina naam wale apps ek-doosre ko replace kar dete hain.\n"
                 + "💡 Ek hi naam = update. Purani app par naya version chadh jata "
                 + "hai, data nahi udta.\n"
-                + "💡 Icon me chhota text (1–3 akshar) sabse saaf dikhta hai.\n"
-                + "💡 Game ya 3D ke liye 3D JS template chuno — three.min.js alag "
-                + "se download karne ki zaroorat nahi.\n"
+                + "💡 Icon me saaf pattern aur tez rang sabse achha dikhta hai — purana design 'Saved Icons' se dobara bhi lag sakta hai.\n"
+                + "💡 Game ya 3D ke liye HTML App me '🎮 3D JS Library' feature "
+                + "ON karo — three.min.js alag se download karne ki zaroorat nahi.\n"
                 + "💡 Badi HTML file ho to code paste ki jagah 'HTML File Chuno' "
                 + "istemaal karo — zyada reliable hai.\n"
                 + "💡 APK share karne se pehle ek baar khud install karke test "
@@ -1475,33 +1560,70 @@ public class MainActivity extends Activity {
         return nameBox.getText().toString().trim();
     }
 
-    // ---------------------------------------------------------- templates (v5.1)
+    // ------------------------------------------------- type + features (v5.3)
 
-    /** Template chunna: button highlight + URL field dikhana/chhupana +
-     *  choice yaad rakhna. */
-    private void selectTemplate(String kind) {
-        templateKind = kind;
+    /** Type chunna: choice yaad rakhna + UI update (gating samet). */
+    private void selectType(String type) {
+        appType = type;
         getSharedPreferences(PREFS_NAME, MODE_PRIVATE).edit()
-                .putString(PREF_TEMPLATE_KIND, kind).apply();
-        if (templateBtns != null) {
-            for (int i = 0; i < TEMPLATE_KINDS.length; i++) {
-                boolean sel = TEMPLATE_KINDS[i].equals(kind);
-                templateBtns[i].setBackground(
+                .putString(PREF_APP_TYPE, type).apply();
+        updateTypeUi();
+    }
+
+    /** Type ke hisaab se UI: type buttons ki highlight, URL field
+     *  sirf URL type par, aur jo feature is type par nahi chalta woh
+     *  apne aap OFF + disable (halka) ho jata hai. */
+    private void updateTypeUi() {
+        boolean url = "url".equals(appType);
+        if (typeBtns != null) {
+            for (int i = 0; i < typeBtns.length; i++) {
+                boolean sel = (i == 1) == url;
+                typeBtns[i].setBackground(
                         roundedBg(sel ? PINK : CARD_BG, 10, sel ? 0 : BORDER));
-                templateBtns[i].setTextColor(sel ? 0xFFFFFFFF : DARK_TEXT);
-                templateBtns[i].setTypeface(null, sel ? Typeface.BOLD : Typeface.NORMAL);
+                typeBtns[i].setTextColor(sel ? 0xFFFFFFFF : DARK_TEXT);
+                typeBtns[i].setTypeface(null, sel ? Typeface.BOLD : Typeface.NORMAL);
             }
         }
         if (urlBox != null) {
-            urlBox.setVisibility("url".equals(kind) ? View.VISIBLE : View.GONE);
+            urlBox.setVisibility(url ? View.VISIBLE : View.GONE);
         }
+        setFeatureEnabled(cbAdBlock, url);
+        setFeatureEnabled(cbHistory, url);
+        setFeatureEnabled(cbGestures, url);
+        setFeatureEnabled(cb3d, !url);
     }
 
-    private static String templateLabel(String kind) {
-        for (int i = 0; i < TEMPLATE_KINDS.length; i++) {
-            if (TEMPLATE_KINDS[i].equals(kind)) return TEMPLATE_LABELS[i];
+    private void setFeatureEnabled(CheckBox cb, boolean allowed) {
+        if (cb == null) return;
+        if (!allowed && cb.isChecked()) cb.setChecked(false); // listener pref bhi OFF kar dega
+        cb.setEnabled(allowed);
+        cb.setAlpha(allowed ? 1f : 0.45f);
+    }
+
+    /** Ek feature checkbox banata hai — saved state ke saath; toggle
+     *  hote hi preference me save ho jata hai. */
+    private CheckBox featureCheck(final String prefKey, String label) {
+        final CheckBox cb = new CheckBox(this);
+        cb.setText(label);
+        cb.setTextSize(14.5f);
+        cb.setTextColor(DARK_TEXT);
+        cb.setButtonTintList(android.content.res.ColorStateList.valueOf(PINK));
+        cb.setChecked(getSharedPreferences(PREFS_NAME, MODE_PRIVATE)
+                .getBoolean(prefKey, false));
+        cb.setOnCheckedChangeListener((btn, checked) -> {
+            getSharedPreferences(PREFS_NAME, MODE_PRIVATE).edit()
+                    .putBoolean(prefKey, checked).apply();
+            if (btn == cbCustomCode) updateCustomCodeVisibility();
+        });
+        return cb;
+    }
+
+    /** Custom JS/CSS tick ho to hi JS/CSS wale boxes dikhte hain. */
+    private void updateCustomCodeVisibility() {
+        if (customCodeBox != null) {
+            customCodeBox.setVisibility(cbCustomCode != null && cbCustomCode.isChecked()
+                    ? View.VISIBLE : View.GONE);
         }
-        return kind;
     }
 
     /** Bundled asset maujood hai ya nahi (template APKs ke liye). */
@@ -1802,8 +1924,23 @@ public class MainActivity extends Activity {
     }
 
     /** Icon Maker (assets/icon_maker.html) ko ek dialog ke andar kholta hai.
-     *  v5.2: dialog ka content ek vertical layout hai — upar WebView
-     *  (weight 1) aur neeche ek button row: Saved Icons picker + Band Karo. */
+     *  Dialog ka content ek vertical layout hai — upar WebView (weight 1)
+     *  aur neeche ek button row: Saved Icons picker + Band Karo.
+     *
+     *  v5.3 FIX (v5.2 ka designer-gaayab bug): v5.2 me wrap layout ko
+     *  setLayoutParams se 580dp ki FIXED height di gayi thi aur designer
+     *  WebView uske andar height 0 + weight 1 par tha. Lekin
+     *  AlertDialog.setView() root view ke apne LayoutParams ki izzat
+     *  NAHI karta — woh view ko apne internal panel me MATCH_PARENT
+     *  wale generated params ke saath daalta hai aur dialog ko
+     *  WRAP_CONTENT naapta hai. Wrap-content naap me bantware ke liye
+     *  koi pakki height hoti hi nahi, isliye weight wala WebView 0px
+     *  par sikud gaya: sirf neeche wali (wrap-content) button row
+     *  dikhti thi, designer loaded hote hue bhi invisible tha.
+     *  Pakka ilaaj: wrap par koi fixed height NA lagao; dialog show
+     *  hone ke BAAD window ko definite size do (poori chaudi x screen
+     *  ka ~85% unchaai) — tab root ki height pakki hoti hai aur
+     *  weight-1 WebView ko sahi jagah milti hai. */
     private void openIconMaker() {
         WebView wv = new WebView(this);
         WebSettings ws = wv.getSettings();
@@ -1818,9 +1955,6 @@ public class MainActivity extends Activity {
 
         LinearLayout wrap = new LinearLayout(this);
         wrap.setOrientation(LinearLayout.VERTICAL);
-        int h = (int) (580 * getResources().getDisplayMetrics().density);
-        wrap.setLayoutParams(new LinearLayout.LayoutParams(
-                LinearLayout.LayoutParams.MATCH_PARENT, h));
         wrap.addView(wv, new LinearLayout.LayoutParams(
                 LinearLayout.LayoutParams.MATCH_PARENT, 0, 1f));
 
@@ -1851,10 +1985,16 @@ public class MainActivity extends Activity {
         closeBtn.setOnClickListener(v -> dialog.dismiss());
         savedBtn.setOnClickListener(v -> showSavedIconsPicker(dialog));
         dialog.show();
-        // Dialog window ko IME (keyboard) allow karna bhi zaroori hai —
-        // SOFT_INPUT_ADJUST_RESIZE ke bina WebView ke input focus to le
-        // lete hain, lekin keyboard upar nahi aata.
         if (dialog.getWindow() != null) {
+            // ASAL FIX: window ko definite size do — poori chaudi aur
+            // screen ka ~85% unchaai. Isi se WebView (weight 1) ko
+            // pakki height milti hai aur designer poora dikhta hai.
+            int wpx = getResources().getDisplayMetrics().widthPixels;
+            int hpx = (int) (getResources().getDisplayMetrics().heightPixels * 0.85);
+            dialog.getWindow().setLayout(wpx, hpx);
+            // Dialog window ko IME (keyboard) allow karna bhi zaroori hai —
+            // SOFT_INPUT_ADJUST_RESIZE ke bina WebView ke input focus to le
+            // lete hain, lekin keyboard upar nahi aata.
             dialog.getWindow().setSoftInputMode(
                     WindowManager.LayoutParams.SOFT_INPUT_ADJUST_RESIZE);
         }
@@ -2192,7 +2332,7 @@ public class MainActivity extends Activity {
     }
 
     private void build() {
-        final boolean isUrl = "url".equals(templateKind);
+        final boolean isUrl = "url".equals(appType);
         final byte[] html;
         final String urlText;
         if (isUrl) {
@@ -2218,39 +2358,93 @@ public class MainActivity extends Activity {
         final String pkg = eff == null ? null : packageForName(eff[0]);
         final String nameSource = eff == null ? "default" : eff[1];
         final byte[] iconBytes = readCustomIcon();
-        final String kind = templateKind;
 
-        // Kaunsi bundled template file istemaal hogi: pehle kind wali,
-        // Default ke liye purani template.apk bhi chalegi (fallback).
-        final String kindAsset = "template_" + kind + ".apk";
-        final String templateAsset;
-        if (assetExists(kindAsset)) {
-            templateAsset = kindAsset;
-        } else if ("default".equals(kind) && assetExists("template.apk")) {
-            templateAsset = "template.apk";
-        } else {
-            setStatus("❌ '" + templateLabel(kind) + "' template is build me nahi mila.\n"
+        // Ek hi template (v5.3): CI wala template.apk.
+        if (!assetExists("template.apk")) {
+            setStatus("❌ Template (template.apk) is build me nahi mila.\n"
                     + "SP WEB OS ka latest version install karke phir try karo.");
             return;
         }
+
+        // ---- Features (v5.3): checkbox states UI thread par hi padh
+        // lo. Type-gating yahan doosri parat ke roop me bhi hai
+        // (checkboxes waise hi disabled rehte hain).
+        final boolean fFullscreen = cbFullscreen.isChecked();
+        final boolean fDarkPage = cbDarkPage.isChecked();
+        final boolean fCustom = cbCustomCode.isChecked();
+        final boolean fAdBlock = isUrl && cbAdBlock.isChecked();
+        final boolean fHistory = isUrl && cbHistory.isChecked();
+        final boolean fGestures = isUrl && cbGestures.isChecked();
+        final boolean f3d = !isUrl && cb3d.isChecked();
+        final String jsCode = jsBox.getText().toString();
+        final String cssCode = cssBox.getText().toString();
+        List<String> on = new ArrayList<>();
+        if (fFullscreen) on.add("Full Screen");
+        if (fDarkPage) on.add("Page Dark Mode");
+        if (fCustom) on.add("Custom JS/CSS");
+        if (fAdBlock) on.add("Ad Block");
+        if (fHistory) on.add("Browse History");
+        if (fGestures) on.add("Swipe Gestures");
+        if (f3d) on.add("3D JS Library");
+        final String featSummary = on.isEmpty() ? "koi nahi" : joinStrings(on);
 
         setStatus("APK ban raha hai... ⏳");
         installBtn.setEnabled(false);
         new Thread(() -> {
             try {
                 Map<String, byte[]> swaps = new HashMap<>();
-                if (isUrl) {
-                    swaps.put("assets/url.txt",
-                            (urlText + "\n").getBytes(StandardCharsets.UTF_8));
-                } else {
-                    swaps.put("assets/index.html", html);
+
+                // config.json — HAR build me jaata hai; template use
+                // padhkar type + saare feature flags tay karta hai.
+                JSONObject cfg = new JSONObject();
+                cfg.put("type", isUrl ? "url" : "html");
+                if (isUrl) cfg.put("url", urlText);
+                cfg.put("fullscreen", fFullscreen);
+                cfg.put("adBlock", fAdBlock);
+                cfg.put("history", fHistory);
+                cfg.put("gestures", fGestures);
+                cfg.put("darkPage", fDarkPage);
+                cfg.put("customCode", fCustom);
+                swaps.put("assets/config.json",
+                        cfg.toString().getBytes(StandardCharsets.UTF_8));
+
+                // index.html: HTML type par user ka page; URL type par
+                // chhota redirect page (asal load config ke URL se hota
+                // hai — ye sirf placeholder/safety hai).
+                swaps.put("assets/index.html", isUrl ? redirectHtml(urlText) : html);
+
+                // 3D JS: builder ke apne assets wali three.min.js seedha
+                // generated app ke andar assets/three.min.js bankar.
+                if (f3d) {
+                    byte[] three = readAssetBytes("three.min.js");
+                    if (three == null || three.length < 100000) {
+                        setStatus("❌ 3D JS library (three.min.js) is build me nahi mili.\n"
+                                + "SP WEB OS ka latest version install karke phir try karo.");
+                        return;
+                    }
+                    swaps.put("assets/three.min.js", three);
                 }
-                builtApk = ApkMaker.buildApk(this, templateAsset, swaps, label, pkg, iconBytes);
+
+                // Custom JS/CSS: assets/inject.js (CSS ek <style> wale
+                // JS wrapper me badal kar user JS ke saath judta hai).
+                if (fCustom) {
+                    String inject = buildInjectJs(jsCode, cssCode);
+                    if (inject != null) {
+                        swaps.put("assets/inject.js",
+                                inject.getBytes(StandardCharsets.UTF_8));
+                    }
+                }
+
+                builtApk = ApkMaker.buildApk(this, "template.apk", swaps, label, pkg, iconBytes);
                 builtLabel = label == null ? "Web App" : label;
                 builtPackage = pkg == null ? ApkPatcher.OLD_PACKAGE : pkg;
-                String saved = saveOutputsToDownloads(html, builtApk, builtLabel);
+                // URL apps ke liye Downloads me redirect wala .html
+                // save hota hai, taaki per-app folder poora rahe.
+                String saved = saveOutputsToDownloads(
+                        isUrl ? redirectHtml(urlText) : html, builtApk, builtLabel);
                 setStatus("✅ APK taiyaar!\nApp: " + builtLabel + " (naam: " + nameSource + ")"
-                        + "\nTemplate: " + templateLabel(kind) + (isUrl ? " — " + urlText : "")
+                        + "\nType: " + (isUrl ? "🌐 URL — " + urlText : "📄 HTML")
+                        + "\nFeatures: " + featSummary
                         + "\nPackage: " + builtPackage
                         + saved
                         + (iconBytes != null ? "\n🎨 Custom icon lagaya gaya." : "")
@@ -2261,6 +2455,52 @@ public class MainActivity extends Activity {
                         + "\n(Tip: agar naam diya tha, to naam khaali karke ek baar phir try karo — default mode hamesha chalta hai.)");
             }
         }).start();
+    }
+
+    /** Builder ka koi asset poora padhta hai (three.min.js ke liye);
+     *  na mile to null. */
+    private byte[] readAssetBytes(String name) {
+        try (InputStream in = getAssets().open(name)) {
+            ByteArrayOutputStream baos = new ByteArrayOutputStream();
+            byte[] buf = new byte[16384];
+            int n;
+            while ((n = in.read(buf)) != -1) baos.write(buf, 0, n);
+            return baos.toByteArray();
+        } catch (Exception e) {
+            return null;
+        }
+    }
+
+    /** URL apps ke liye chhota redirect page — Downloads me
+     *  <AppName>.html bankar save hota hai (aur APK ke andar
+     *  placeholder bhi rehta hai; asal kaam config.json ke URL ka hai). */
+    private static byte[] redirectHtml(String url) {
+        String esc = url.replace("&", "&amp;").replace("\"", "&quot;");
+        String page = "<!DOCTYPE html>\n<html><head><meta charset=\"utf-8\">"
+                + "<meta http-equiv=\"refresh\" content=\"0; url=" + esc + "\">"
+                + "<title>" + esc + "</title></head><body>"
+                + "<p>Khul raha hai: <a href=\"" + esc + "\">" + esc + "</a></p>"
+                + "</body></html>";
+        return page.getBytes(StandardCharsets.UTF_8);
+    }
+
+    /** Custom JS/CSS feature ke liye inject.js ka text banata hai:
+     *  CSS ko <style> lagane wale JS wrapper me badal kar user ke JS
+     *  ke aage jodta hai. Dono khaali hon to null (inject.js nahi banta). */
+    private static String buildInjectJs(String js, String css) {
+        StringBuilder sb = new StringBuilder();
+        String c = css == null ? "" : css.trim();
+        String j = js == null ? "" : js.trim();
+        if (!c.isEmpty()) {
+            String esc = c.replace("\\", "\\\\").replace("'", "\\'")
+                    .replace("\r", "").replace("\n", "\\n");
+            sb.append("(function(){try{var st=document.createElement('style');"
+                    + "st.textContent='").append(esc).append("';"
+                    + "(document.head||document.documentElement).appendChild(st);"
+                    + "}catch(e){}})();\n");
+        }
+        if (!j.isEmpty()) sb.append(j).append("\n");
+        return sb.length() == 0 ? null : sb.toString();
     }
 
     private void install() {

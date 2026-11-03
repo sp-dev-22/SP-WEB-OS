@@ -3,73 +3,95 @@ plugins {
 }
 
 android {
-    namespace 'com.sp.webos.builder'
+    namespace 'com.sp.webos'
     compileSdk 34
 
     defaultConfig {
         applicationId 'com.sp.webos'
-        minSdk 26
+        minSdk 24
         targetSdk 34
         versionCode 1
-        versionName '5.2'
+        versionName '5.3'
     }
 }
 
 dependencies {
-    // Google's APK signing library (same one apksigner uses) — runs on-device.
-    implementation 'com.android.tools.build:apksig:8.2.2'
+    // APK signing (V1 + V2) fully on-device.
+    implementation 'com.android.tools.build:apksig:8.3.0'
 }
 
-// Launcher icons ship in this repo as base64 text files (icon-b64/) because
-// the repo is maintained through an API that cannot carry binary files.
-// Decode them into real PNG mipmaps under src/main/res before resources are
-// processed, so the builder app itself gets a proper launcher icon.
-// File names: ic_launcher-<density>.b64, ic_launcher_round-<density>.b64
+// Launcher icons ship in this repo as base64 text files (icon-b64/)
+// because binary files cannot be uploaded through the Muse app.
+// This task decodes them into real PNG mipmaps before every build.
 def decodeLauncherIcons = tasks.register('decodeLauncherIcons') {
     def b64Dir = file('icon-b64')
     def resDir = file('src/main/res')
     inputs.dir(b64Dir)
+    outputs.dir(resDir)
     doLast {
-        b64Dir.listFiles()?.findAll { it.name.endsWith('.b64') }?.each { f ->
-            def base = f.name - '.b64'
-            def dash = base.lastIndexOf('-')
-            def iconName = base.substring(0, dash)
-            def density = base.substring(dash + 1)
-            def outDir = new File(resDir, "mipmap-${density}")
-            outDir.mkdirs()
-            new File(outDir, "${iconName}.png").bytes =
-                    java.util.Base64.mimeDecoder.decode(f.getText('UTF-8').trim())
+        b64Dir.eachFile { f ->
+            if (!f.name.endsWith('.b64')) return
+            def base = f.name - '.b64'              // e.g. mipmap-xxxhdpi_ic_launcher.png
+            def dash = base.lastIndexOf('_')
+            def folder = base.substring(0, dash)    // mipmap-xxxhdpi
+            def name = base.substring(dash + 1)     // ic_launcher.png
+            def out = new File(resDir, folder + '/' + name)
+            out.parentFile.mkdirs()
+            out.bytes = f.getText('UTF-8').trim().decodeBase64()
         }
     }
 }
 tasks.named('preBuild') { dependsOn(decodeLauncherIcons) }
 
-// ---------------------------------------------------------------------------
-// v5.1: chaar template flavors ko builder ke assets me pack karo.
-// CI workflow pehle :template-app:assembleDebug chalata hai (saare flavors),
-// isliye unke APKs ../template-app/build/outputs/apk/<flavor>/debug/ me
-// taiyaar milte hain. Unhi ko yahan template_<kind>.apk naam se copy karke
-// ek generated assets dir me rakha jata hai, jo main assets sourceSet me
-// shamil hai. Local / standalone build me files na milein to Copy task
-// chup chaap khaali reh jata hai — build fail nahi hota (us case me purani
-// template.apk, jo workflow src/main/assets me dalta hai, istemaal hogi).
-def templateApksDir = layout.buildDirectory.dir('generated/template-apks')
-def embedTemplateApks = tasks.register('embedTemplateApks', Copy) {
-    ['default', 'js3d', 'url', 'full'].each { kind ->
-        from("../template-app/build/outputs/apk/${kind}/debug") {
-            include "template-app-${kind}-debug.apk"
-            rename { "template_${kind}.apk" }
+// v5.3: three.min.js (three@0.160.0, pinned) ab BUILDER ke assets me
+// jaata hai. "3D JS Library" feature ON ho to builder use generated app
+// ke andar assets/three.min.js ke roop me jod deta hai (ApkMaker swap).
+// File CI par CDN se download hoti hai (do mirrors); dono unreachable
+// hon to build FAIL hota hai — chup-chaap gaayab nahi hoti.
+def threeJsOutDir = file('build/generated/threejs-assets')
+def fetchThreeJs = tasks.register('fetchThreeJs') {
+    def target = new File(threeJsOutDir, 'three.min.js')
+    outputs.file(target)
+    outputs.upToDateWhen { target.exists() && target.length() > 100000 }
+    doLast {
+        if (target.exists() && target.length() > 100000) return
+        threeJsOutDir.mkdirs()
+        def urls = [
+                'https://cdn.jsdelivr.net/npm/three@0.160.0/build/three.min.js',
+                'https://cdnjs.cloudflare.com/ajax/libs/three.js/0.160.0/three.min.js'
+        ]
+        Exception last = null
+        for (u in urls) {
+            try {
+                new URL(u).withInputStream { ins ->
+                    target.withOutputStream { out -> out << ins }
+                }
+                if (target.length() > 100000) { last = null; break }
+                throw new IOException('downloaded file too small: ' + target.length())
+            } catch (Exception e) {
+                last = e
+            }
+        }
+        if (last != null) {
+            throw new GradleException('three.min.js download nahi ho paya (dono CDN fail): ' + last.message)
         }
     }
-    into templateApksDir
 }
+
 android {
     sourceSets {
         main {
-            assets.srcDirs = ['src/main/assets', templateApksDir.get().asFile]
+            // src/main/assets ke saath generated threejs-assets dir bhi —
+            // builder APK ke andar assets/three.min.js ban jata hai.
+            assets.srcDirs = ['src/main/assets', 'build/generated/threejs-assets']
         }
     }
 }
-tasks.named('preBuild') { dependsOn(embedTemplateApks) }
+
+// Merge-assets tasks ko fetchThreeJs ke baad chalao taaki three.min.js
+// pakka builder APK me shamil ho. (v5.1 ka sabak: tasks.named(...) wala
+// finalizedBy configuration time par phatta hai, isliye matching +
+// configureEach hi istemaal karo.)
+tasks.named('preBuild') { dependsOn(fetchThreeJs) }
 tasks.matching { it.name.startsWith('merge') && it.name.endsWith('Assets') }
-        .configureEach { dependsOn(embedTemplateApks) }
+        .configureEach { dependsOn(fetchThreeJs) }
