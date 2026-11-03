@@ -11,17 +11,12 @@
   h2 { margin:2px 0 4px; font-size:19px; color:var(--pink-dark); }
   .hint { font-size:12px; color:#666; margin:0 0 10px; }
   label.lbl { display:block; font-size:13px; font-weight:bold; margin:14px 0 6px; }
-  input[type="text"] { width:100%; padding:9px; font-size:16px; border:1px solid var(--line); border-radius:8px; -webkit-user-select:text; user-select:text; touch-action:manipulation; }
   select { width:100%; padding:9px; font-size:15px; border:1px solid var(--line); border-radius:8px; background:#fff; }
   input[type="range"] { width:100%; }
   input[type="color"] { width:56px; height:38px; border:1px solid var(--line); border-radius:8px; background:#fff; padding:2px; vertical-align:middle; }
   .row { display:flex; align-items:center; gap:10px; flex-wrap:wrap; }
   .swatches { display:flex; gap:8px; flex-wrap:wrap; }
   .sw { width:32px; height:32px; border-radius:50%; border:2px solid #fff; box-shadow:0 0 0 1px #ccc; cursor:pointer; }
-  .radios { display:flex; gap:8px; }
-  .radios label { flex:1; text-align:center; padding:8px 4px; border:1.5px solid var(--line); border-radius:8px; font-size:14px; cursor:pointer; }
-  .radios input { display:none; }
-  .radios label.on { border-color:var(--pink); color:var(--pink-dark); background:#FCE4EC; font-weight:bold; }
   .stage { text-align:center; margin-top:6px; }
   #main { width:min(72vw, 280px); height:auto; border:1px solid var(--line); border-radius:10px; }
   .previews { display:flex; gap:22px; justify-content:center; margin-top:10px; }
@@ -34,12 +29,11 @@
   #saveBtn { background:var(--pink); color:#fff; font-weight:bold; }
   #clearBtn { background:#fff; color:var(--pink-dark); border:1.5px solid var(--pink); }
   #done { text-align:center; color:#2E7D32; font-weight:bold; min-height:20px; margin-top:8px; font-size:14px; }
-  .chk { font-size:14px; }
 </style>
 </head>
 <body>
 <h2>🎨 App Icon बनाओ</h2>
-<p class="hint">अपना design बनाओ — यही icon बने हुए app के launcher पर दिखेगा। Preview में गोल और चौकोर, दोनों रूप देख लो।</p>
+<p class="hint">रंग + pattern चुनो — यही icon बने हुए app के launcher पर दिखेगा। Preview में गोल और चौकोर, दोनों रूप देख लो।</p>
 
 <div class="stage">
   <canvas id="main" width="512" height="512"></canvas>
@@ -59,9 +53,17 @@
 <select id="pattern">
   <option value="none">कोई नहीं (सादा)</option>
   <option value="dots">Dots (बिंदियाँ)</option>
+  <option value="bubbles">Bubbles (गोले)</option>
   <option value="circles">Circles / Rings (गोले)</option>
-  <option value="lines">Lines (धारियाँ)</option>
+  <option value="lines">Lines (तिरछी धारियाँ)</option>
+  <option value="stripes">Stripes (सीधी धारियाँ)</option>
   <option value="grid">Grid (जाली)</option>
+  <option value="waves">Waves (लहरें)</option>
+  <option value="zigzag">Zigzag (टेढ़ी-मेढ़ी)</option>
+  <option value="triangles">Triangles (त्रिकोण)</option>
+  <option value="diamonds">Diamonds (हीरे)</option>
+  <option value="checker">Checkerboard (शतरंज)</option>
+  <option value="plus">Plus (क्रॉस +)</option>
 </select>
 <div class="row" style="margin-top:8px;">
   <span style="font-size:13px;">Pattern रंग:</span>
@@ -69,25 +71,6 @@
   <span style="font-size:13px;">Pattern size:</span>
 </div>
 <input type="range" id="patSize" min="14" max="90" value="42">
-
-<label class="lbl">Icon पर text</label>
-<input type="text" id="iconText" value="W" maxlength="14" placeholder="जैसे: SP, Study, 📚"
-       inputmode="text" autocomplete="off" autocapitalize="off" spellcheck="false" enterkeyhint="done">
-
-<div class="row" style="margin-top:8px;">
-  <span style="font-size:13px;">Text रंग:</span>
-  <input type="color" id="textColor" value="#ffffff">
-  <label class="chk"><input type="checkbox" id="boldText" checked> Bold</label>
-</div>
-<label class="lbl">Text size</label>
-<input type="range" id="textSize" min="40" max="380" value="230">
-
-<label class="lbl">Text की position</label>
-<div class="radios" id="posRadios">
-  <label data-pos="top"><input type="radio" name="pos" value="top">⬆ ऊपर</label>
-  <label data-pos="center" class="on"><input type="radio" name="pos" value="center" checked>⬤ बीच में</label>
-  <label data-pos="bottom"><input type="radio" name="pos" value="bottom">⬇ नीचे</label>
-</div>
 
 <div class="btns">
   <button class="act" id="saveBtn">✅ यह icon इस्तेमाल करो</button>
@@ -104,9 +87,8 @@
   var pvC = document.getElementById('pvCircle').getContext('2d');
 
   var $ = function (id) { return document.getElementById(id); };
-  var bgColor = $('bgColor'), patColor = $('patColor'), textColor = $('textColor');
+  var bgColor = $('bgColor'), patColor = $('patColor');
   var pattern = $('pattern'), patSize = $('patSize');
-  var iconText = $('iconText'), textSize = $('textSize'), boldText = $('boldText');
 
   // Background colour swatches
   var swatchCols = ['#E91E63', '#D81B60', '#1E88E5', '#43A047', '#FB8C00',
@@ -119,18 +101,15 @@
     swBox.appendChild(d);
   });
 
-  function currentPos() {
-    var r = document.querySelector('input[name="pos"]:checked');
-    return r ? r.value : 'center';
+  // Bubbles ke liye deterministic pseudo-random (seed fixed, taaki
+  // preview aur saved icon hamesha ek jaise dikhein).
+  function makeRand(seed) {
+    var x = seed >>> 0;
+    return function () {
+      x = (x * 1103515245 + 12345) % 2147483648;
+      return x / 2147483648;
+    };
   }
-  document.querySelectorAll('#posRadios label').forEach(function (lab) {
-    lab.addEventListener('click', function () {
-      document.querySelectorAll('#posRadios label').forEach(function (l) { l.classList.remove('on'); });
-      lab.classList.add('on');
-      lab.querySelector('input').checked = true;
-      draw();
-    });
-  });
 
   function drawPattern() {
     var kind = pattern.value;
@@ -147,6 +126,17 @@
           ctx.beginPath(); ctx.arc(x, y, r, 0, Math.PI * 2); ctx.fill();
         }
       }
+    } else if (kind === 'bubbles') {
+      var rand = makeRand(987654321);
+      var n = Math.round(2600 / sz) + 12;
+      for (var i = 0; i < n; i++) {
+        var bx = rand() * S, by = rand() * S;
+        var br = sz / 6 + rand() * (sz / 1.1);
+        ctx.beginPath(); ctx.arc(bx, by, br, 0, Math.PI * 2);
+        if (rand() > 0.5) { ctx.globalAlpha = 0.55; ctx.fill(); }
+        else { ctx.globalAlpha = 0.9; ctx.lineWidth = Math.max(2, sz / 12); ctx.stroke(); }
+      }
+      ctx.globalAlpha = 1;
     } else if (kind === 'circles') {
       ctx.lineWidth = Math.max(3, sz / 8);
       var rr = sz / 1.6;
@@ -162,12 +152,79 @@
         ctx.moveTo(d, S + 8); ctx.lineTo(d + S, -8);
       }
       ctx.stroke();
+    } else if (kind === 'stripes') {
+      var bh = Math.max(4, sz / 3);
+      for (y = step / 4; y < S; y += step) ctx.fillRect(0, y, S, bh);
     } else if (kind === 'grid') {
       ctx.lineWidth = Math.max(2, sz / 10);
       ctx.beginPath();
       for (x = step / 2; x < S; x += step) { ctx.moveTo(x, 0); ctx.lineTo(x, S); }
       for (y = step / 2; y < S; y += step) { ctx.moveTo(0, y); ctx.lineTo(S, y); }
       ctx.stroke();
+    } else if (kind === 'waves') {
+      ctx.lineWidth = Math.max(3, sz / 9);
+      var amp = sz / 3.2, wl = Math.max(60, step * 1.4);
+      for (var wy = step / 2 - amp; wy < S + amp; wy += step) {
+        ctx.beginPath();
+        for (x = 0; x <= S; x += 8) {
+          var yy = wy + Math.sin((x / wl) * Math.PI * 2) * amp;
+          if (x === 0) ctx.moveTo(x, yy); else ctx.lineTo(x, yy);
+        }
+        ctx.stroke();
+      }
+    } else if (kind === 'zigzag') {
+      ctx.lineWidth = Math.max(3, sz / 9);
+      var za = sz / 2.6, zh = step / 2;
+      for (var zy = step / 2; zy < S + step; zy += step) {
+        ctx.beginPath();
+        var up = true;
+        for (x = 0; x <= S + zh; x += zh) {
+          var zy2 = zy + (up ? -za : za);
+          if (x === 0) ctx.moveTo(x, zy2); else ctx.lineTo(x, zy2);
+          up = !up;
+        }
+        ctx.stroke();
+      }
+    } else if (kind === 'triangles') {
+      var tw = step * 0.72, th = step * 0.64;
+      for (y = 0; y < S + step; y += step) {
+        for (x = 0; x < S + step; x += step) {
+          var cx = x + step / 2, cy = y + step / 2;
+          ctx.beginPath();
+          ctx.moveTo(cx, cy - th / 2);
+          ctx.lineTo(cx + tw / 2, cy + th / 2);
+          ctx.lineTo(cx - tw / 2, cy + th / 2);
+          ctx.closePath(); ctx.fill();
+        }
+      }
+    } else if (kind === 'diamonds') {
+      var dr = sz * 0.85;
+      for (y = step / 2; y < S + step; y += step) {
+        for (x = step / 2; x < S + step; x += step) {
+          ctx.beginPath();
+          ctx.moveTo(x, y - dr);
+          ctx.lineTo(x + dr * 0.68, y);
+          ctx.lineTo(x, y + dr);
+          ctx.lineTo(x - dr * 0.68, y);
+          ctx.closePath(); ctx.fill();
+        }
+      }
+    } else if (kind === 'checker') {
+      var cell = Math.max(18, sz * 1.3);
+      var ri = 0;
+      for (y = 0; y < S; y += cell, ri++) {
+        for (var ci = 0, x = 0; x < S; x += cell, ci++) {
+          if ((ci + ri) % 2 === 0) ctx.fillRect(x, y, cell, cell);
+        }
+      }
+    } else if (kind === 'plus') {
+      var arm = sz / 1.5, th2 = Math.max(3, sz / 5);
+      for (y = step / 2; y < S + step; y += step) {
+        for (x = step / 2; x < S + step; x += step) {
+          ctx.fillRect(x - th2 / 2, y - arm, th2, arm * 2);
+          ctx.fillRect(x - arm, y - th2 / 2, arm * 2, th2);
+        }
+      }
     }
   }
 
@@ -176,32 +233,15 @@
     ctx.fillStyle = bgColor.value;
     ctx.fillRect(0, 0, S, S);
     drawPattern();
-    var t = iconText.value;
-    if (t) {
-      var size = parseInt(textSize.value, 10);
-      ctx.fillStyle = textColor.value;
-      ctx.font = (boldText.checked ? 'bold ' : '') + size + 'px sans-serif';
-      ctx.textAlign = 'center';
-      ctx.textBaseline = 'middle';
-      var pos = currentPos();
-      var y = pos === 'top' ? S * 0.22 : (pos === 'bottom' ? S * 0.78 : S * 0.52);
-      ctx.fillText(t, S / 2, y, S * 0.92);
-    }
     pvR.drawImage(main, 0, 0, 184, 184);
     pvC.drawImage(main, 0, 0, 184, 184);
   }
 
-  [bgColor, patColor, textColor, pattern, patSize, iconText, textSize, boldText]
+  [bgColor, patColor, pattern, patSize]
     .forEach(function (el) {
       el.addEventListener('input', draw);
       el.addEventListener('change', draw);
     });
-
-  // Keyboard fix (v5.1): kuchh WebViews me tap par input focus to le leta
-  // hai par keyboard nahi khulta — user gesture ke andar explicit focus()
-  // bulane se IME reliably khulta hai.
-  iconText.addEventListener('click', function () { iconText.focus(); });
-  iconText.addEventListener('touchend', function () { setTimeout(function () { iconText.focus(); }, 60); });
 
   $('saveBtn').onclick = function () {
     if (window.IconBridge && IconBridge.saveIcon) {
@@ -214,7 +254,7 @@
   $('clearBtn').onclick = function () {
     if (window.IconBridge && IconBridge.clearIcon) {
       IconBridge.clearIcon();
-      $('done').textContent = '↩️ Default icon (गुलाबी W) लगेगा।';
+      $('done').textContent = '↩️ Default icon लगेगा।';
     } else {
       $('done').textContent = '⚠️ यह page app के अंदर ही काम करती है।';
     }
