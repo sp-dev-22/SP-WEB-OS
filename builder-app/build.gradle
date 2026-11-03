@@ -11,7 +11,7 @@ android {
         minSdk 26
         targetSdk 34
         versionCode 1
-        versionName '5.3.1'
+        versionName '6.0.0'
     }
 }
 
@@ -81,15 +81,120 @@ def fetchThreeJs = tasks.register('fetchThreeJs') {
     }
 }
 
+
+// ---------------------------------------------------------------------------
+// v6.0: Chart.js (chart.js@4.4.1 UMD, pinned) — three.js wale pattern
+// par hi builder ke assets me aata hai (assets/chart.min.js). Generated
+// HTML me tabhi jata hai jab user builder me library chune. Dono
+// mirrors fail hon to build FAIL — chup-chaap gaayab nahi hoti.
+def fetchChartJs = tasks.register('fetchChartJs') {
+    def outDir = file('build/generated/chartjs-assets')
+    def outFile = new File(outDir, 'chart.min.js')
+    outputs.file(outFile)
+    doLast {
+        if (!outFile.exists() || outFile.length() < 50000) {
+            outDir.mkdirs()
+            def urls = [
+                'https://cdn.jsdelivr.net/npm/chart.js@4.4.1/dist/chart.umd.min.js',
+                'https://cdnjs.cloudflare.com/ajax/libs/Chart.js/4.4.1/chart.umd.min.js'
+            ]
+            Exception last = null
+            for (u in urls) {
+                try {
+                    def conn = new URL(u).openConnection()
+                    conn.connectTimeout = 20000
+                    conn.readTimeout = 60000
+                    conn.inputStream.withStream { inp ->
+                        outFile.withOutputStream { out -> out << inp }
+                    }
+                    last = null
+                    break
+                } catch (Exception e) {
+                    last = e
+                }
+            }
+            if (last != null) throw last
+        }
+    }
+}
+
+// ---------------------------------------------------------------------------
+// v6.0: KaTeX (0.16.11) — BEST EFFORT. npm tgz se dist ka js + css +
+// woff2 fonts nikaal kar 'lib/katex/' structure me rakha jata hai
+// (assets/lib/katex/katex.min.js, .css, fonts/*.woff2). Koi bhi kadam
+// fail ho to sirf WARNING — build aage badhta hai (builder runtime par
+// asset na mile to library-swap khud skip ho jata hai).
+def fetchKatex = tasks.register('fetchKatex') {
+    def outDir = file('build/generated/katex-assets')
+    def marker = new File(outDir, 'lib/katex/katex.min.js')
+    outputs.file(marker)
+    doLast {
+        if (!marker.exists()) {
+            try {
+                def workDir = new File(outDir, '.work')
+                workDir.mkdirs()
+                def tgz = new File(workDir, 'katex.tgz')
+                def urls = [
+                    'https://registry.npmjs.org/katex/-/katex-0.16.11.tgz',
+                    'https://registry.npmmirror.com/katex/-/katex-0.16.11.tgz'
+                ]
+                Exception last = null
+                for (u in urls) {
+                    try {
+                        def conn = new URL(u).openConnection()
+                        conn.connectTimeout = 20000
+                        conn.readTimeout = 60000
+                        conn.inputStream.withStream { inp ->
+                            tgz.withOutputStream { out -> out << inp }
+                        }
+                        if (tgz.length() > 1000000) { last = null; break }
+                        last = new GradleException('katex tgz too small')
+                    } catch (Exception e) {
+                        last = e
+                    }
+                }
+                if (last != null) throw last
+                def dest = new File(outDir, 'lib/katex')
+                def fontsDir = new File(dest, 'fonts')
+                fontsDir.mkdirs()
+                copy {
+                    from(tarTree(tgz)) {
+                        include 'package/dist/katex.min.js'
+                        include 'package/dist/katex.min.css'
+                        include 'package/dist/fonts/*.woff2'
+                    }
+                    into(workDir)
+                    eachFile { fcd -> fcd.path = fcd.name }
+                    includeEmptyDirs = false
+                }
+                new File(workDir, 'katex.min.js').renameTo(new File(dest, 'katex.min.js'))
+                new File(workDir, 'katex.min.css').renameTo(new File(dest, 'katex.min.css'))
+                fileTree(workDir).matching { include '*.woff2' }.files.each { ff ->
+                    ff.renameTo(new File(fontsDir, ff.name))
+                }
+                if (!marker.exists()) throw new GradleException('katex extract incomplete')
+                logger.lifecycle('KaTeX ready: assets/lib/katex/ (js+css+woff2 fonts)')
+            } catch (Exception e) {
+                logger.warn('KaTeX fetch/extract failed — continuing WITHOUT KaTeX: ' + e.message)
+            }
+        }
+    }
+}
+
 android {
     sourceSets {
         main {
             // src/main/assets ke saath generated threejs-assets dir bhi —
             // builder APK ke andar assets/three.min.js ban jata hai.
-            assets.srcDirs = ['src/main/assets', 'build/generated/threejs-assets']
+            // v6.0: chartjs-assets (chart.min.js) aur katex-assets
+            // (lib/katex/...) bhi — teeno library files builder APK ke
+            // assets me rehti hain; generated app me tabhi jaati hain
+            // jab user library chune.
+            assets.srcDirs = ['src/main/assets', 'build/generated/threejs-assets',
+                    'build/generated/chartjs-assets', 'build/generated/katex-assets']
         }
     }
 }
-tasks.named('preBuild') { dependsOn(fetchThreeJs) }
+tasks.named('preBuild') { dependsOn(fetchThreeJs, fetchChartJs, fetchKatex) }
 tasks.matching { it.name.startsWith('merge') && it.name.endsWith('Assets') }
-        .configureEach { dependsOn(fetchThreeJs) }
+        .configureEach { dependsOn(fetchThreeJs, fetchChartJs, fetchKatex) }
