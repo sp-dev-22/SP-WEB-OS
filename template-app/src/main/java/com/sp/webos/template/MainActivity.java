@@ -113,7 +113,15 @@ public class MainActivity extends Activity {
     private boolean bgServiceOn;
     private boolean panelReloadNeeded;
     private View panelOverlay;
-    private int panelTab = 0; // 0=History, 1=Scripts, 2=Script jodo
+    private int panelTab = 0; // 0=History, 1=Scripts, 2=Script jodo, 3=App Lock
+    // v6.1: App Lock (app level) — haalat sp_panel me (lock on/off +
+    // PIN ka SHA-256 hash; asli PIN kabhi save nahi hota).
+    private boolean pLock;
+    private String pPinHash = "";
+    private boolean sessionLocked;
+    private long backgroundAt;
+    private View lockOverlay;
+    private int lockFormMode; // panel ke lock form ki haalat: 0=main, 2=PIN badlo
     private LinearLayout panelBtnGrid;
     private FrameLayout panelContent;
     private ListView panelHistList;
@@ -347,9 +355,14 @@ public class MainActivity extends Activity {
         seedPanelIfNeeded();
         loadPanelState();
         defaultUa = s.getUserAgentString();
-        if (pDesk && "url".equals(cfgType)) {
+        if (pDesk) {
             s.setUserAgentString(DESKTOP_UA);
         }
+        // v6.1: App Lock ON ho to app lock screen ke peeche se shuru
+        // hota hai — jab tak PIN na khule, WebView INVISIBLE rehta
+        // hai, page ka kuch dikh hi nahi sakta.
+        sessionLocked = pLock;
+        if (sessionLocked) webView.setVisibility(View.INVISIBLE);
         if (pFull) {
             getWindow().addFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON);
             applyImmersive();
@@ -362,6 +375,7 @@ public class MainActivity extends Activity {
         installEdgeGestures();  // listener hamesha; gate panel state par hai
         addSecretDot();         // dot ab HAR app me — yahi panel ka darwaza hai
         updateBgService();      // BG Play default ON ho to service shuru
+        if (sessionLocked) showLockScreen();  // v6.1: lock screen sabse upar
     }
 
 
@@ -437,13 +451,15 @@ public class MainActivity extends Activity {
         rootLayout.addView(dot, lp);
     }
 
-    /** Ek page-visit history me note karta hai (sirf http/https).
+    /** Ek page-visit history me note karta hai — v6.1 se HAR page:
+     *  http/https ke saath local file:// pages bhi (HTML apps me bhi
+     *  history banti hai; available/unavailable ka koi funda nahi).
      *  Lagatar ek hi URL dobara aaye to usi entry ka title/samaya
      *  tazaa hota hai; purana (non-consecutive) repeat sabse aakhir
      *  chala jata hai. Cap 200 — purane apne aap hat-te hain. */
     private void recordHistory(String url, String title) {
         if (url == null) return;
-        if (!url.startsWith("http://") && !url.startsWith("https://")) return;
+        if (url.isEmpty() || url.startsWith("about:")) return;
         try {
             JSONArray arr = loadHistoryArray();
             long now = System.currentTimeMillis();
@@ -495,7 +511,6 @@ public class MainActivity extends Activity {
             "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) "
             + "Chrome/120.0.0.0 Safari/537.36";
 
-    private boolean isUrlType() { return "url".equals(cfgType); }
 
     private LinearLayout.LayoutParams lpWrap(int topDp) {
         LinearLayout.LayoutParams p = new LinearLayout.LayoutParams(
@@ -507,12 +522,12 @@ public class MainActivity extends Activity {
 
     /** Dot dabane par khulne wala full-screen control panel: upar
      *  chhote toggle buttons ki grid, neeche History / Scripts /
-     *  Script-jodo views. Jo cheez is app ke type par lagu nahi hoti,
-     *  woh DHUNDLI (alpha 0.35) aur band (non-clickable) dikhti hai —
-     *  chhupati kabhi nahi. */
+     *  Script-jodo / App Lock views. v6.1: SAB buttons SAB apps me
+     *  (HTML + URL dono) sakriya hain — available/unavailable
+     *  (dimmed) wala system poori tarah hata diya gaya hai. */
     private void showPanel() {
         if (panelOverlay != null) return;
-        panelTab = isUrlType() ? 0 : 1;
+        panelTab = 0;
         FrameLayout overlay = new FrameLayout(this);
         overlay.setBackgroundColor(0xFFFAFAFA);
 
@@ -596,8 +611,9 @@ public class MainActivity extends Activity {
     }
 
     /** Toggle button ki haalat-wali sajawat: ON = gulabi bhara hua,
-     *  OFF = halka grey. available na ho to dhundla + band. */
-    private void stylePanelToggle(Button b, boolean on, boolean available) {
+     *  OFF = halka grey. v6.1: har button hamesha sakriya hai —
+     *  dimmed/band wala vyavhaar khatm. */
+    private void stylePanelToggle(Button b, boolean on) {
         GradientDrawable g = new GradientDrawable();
         g.setCornerRadius(dp(8));
         if (on) {
@@ -612,13 +628,13 @@ public class MainActivity extends Activity {
             b.setTypeface(null, android.graphics.Typeface.NORMAL);
         }
         b.setBackground(g);
-        b.setEnabled(available);
-        b.setAlpha(available ? 1f : 0.35f);
+        b.setEnabled(true);
+        b.setAlpha(1f);
     }
 
-    /** History/Scripts/Add — ye teen "view badalne" wale buttons hain:
-     *  chuna hua = pink bhara, baaki halke neele. */
-    private void stylePanelTabBtn(Button b, boolean selected, boolean available) {
+    /** History/Scripts/Add/Lock — ye "view badalne" wale buttons
+     *  hain: chuna hua = pink bhara, baaki halke neele. */
+    private void stylePanelTabBtn(Button b, boolean selected) {
         GradientDrawable g = new GradientDrawable();
         g.setCornerRadius(dp(8));
         if (selected) {
@@ -632,8 +648,8 @@ public class MainActivity extends Activity {
             b.setTypeface(null, android.graphics.Typeface.NORMAL);
         }
         b.setBackground(g);
-        b.setEnabled(available);
-        b.setAlpha(available ? 1f : 0.35f);
+        b.setEnabled(true);
+        b.setAlpha(1f);
     }
 
     /** Upar wali button-grid dobara banata hai — har toggle ke baad
@@ -641,11 +657,10 @@ public class MainActivity extends Activity {
     private void refreshPanelButtons() {
         if (panelBtnGrid == null) return;
         panelBtnGrid.removeAllViews();
-        final boolean url = isUrlType();
         List<Button> btns = new ArrayList<>();
 
         Button bNight = panelButton("🌙 Night" + (pNight ? " • ON" : ""));
-        stylePanelToggle(bNight, pNight, true);
+        stylePanelToggle(bNight, pNight);
         bNight.setOnClickListener(v -> {
             pNight = !pNight;
             savePanelState();
@@ -655,12 +670,12 @@ public class MainActivity extends Activity {
         btns.add(bNight);
 
         Button bFull = panelButton("⛶ Full Screen" + (pFull ? " • ON" : ""));
-        stylePanelToggle(bFull, pFull, true);
+        stylePanelToggle(bFull, pFull);
         bFull.setOnClickListener(v -> { toggleFullScreen(); refreshPanelButtons(); });
         btns.add(bFull);
 
         Button bBg = panelButton("📺 BG Play" + (pBg ? " • ON" : ""));
-        stylePanelToggle(bBg, pBg, true);
+        stylePanelToggle(bBg, pBg);
         bBg.setOnClickListener(v -> {
             pBg = !pBg;
             savePanelState();
@@ -670,7 +685,7 @@ public class MainActivity extends Activity {
         btns.add(bBg);
 
         Button bPip = panelButton("🖼️ PiP" + (pPip ? " • ON" : ""));
-        stylePanelToggle(bPip, pPip, true);
+        stylePanelToggle(bPip, pPip);
         bPip.setOnClickListener(v -> {
             pPip = !pPip;
             savePanelState();
@@ -688,8 +703,8 @@ public class MainActivity extends Activity {
         btns.add(bPip);
 
         Button bAd = panelButton("🚫 Ad Block" + (pAd ? " • ON" : ""));
-        stylePanelToggle(bAd, pAd, url);
-        if (url) bAd.setOnClickListener(v -> {
+        stylePanelToggle(bAd, pAd);
+        bAd.setOnClickListener(v -> {
             pAd = !pAd;
             savePanelState();
             panelReloadNeeded = true;
@@ -698,8 +713,8 @@ public class MainActivity extends Activity {
         btns.add(bAd);
 
         Button bGest = panelButton("👆 Gestures" + (pGest ? " • ON" : ""));
-        stylePanelToggle(bGest, pGest, url);
-        if (url) bGest.setOnClickListener(v -> {
+        stylePanelToggle(bGest, pGest);
+        bGest.setOnClickListener(v -> {
             pGest = !pGest;
             savePanelState();
             refreshPanelButtons();
@@ -707,8 +722,8 @@ public class MainActivity extends Activity {
         btns.add(bGest);
 
         Button bDesk = panelButton("🖥️ Desktop" + (pDesk ? " • ON" : ""));
-        stylePanelToggle(bDesk, pDesk, url);
-        if (url) bDesk.setOnClickListener(v -> {
+        stylePanelToggle(bDesk, pDesk);
+        bDesk.setOnClickListener(v -> {
             pDesk = !pDesk;
             savePanelState();
             try {
@@ -720,19 +735,26 @@ public class MainActivity extends Activity {
         btns.add(bDesk);
 
         Button tHist = panelButton("🤫 History");
-        stylePanelTabBtn(tHist, panelTab == 0, url);
-        if (url) tHist.setOnClickListener(v -> showPanelTab(0));
+        stylePanelTabBtn(tHist, panelTab == 0);
+        tHist.setOnClickListener(v -> showPanelTab(0));
         btns.add(tHist);
 
         Button tScripts = panelButton("📜 Scripts");
-        stylePanelTabBtn(tScripts, panelTab == 1, true);
+        stylePanelTabBtn(tScripts, panelTab == 1);
         tScripts.setOnClickListener(v -> showPanelTab(1));
         btns.add(tScripts);
 
         Button tAdd = panelButton("💾 Script जोड़ो");
-        stylePanelTabBtn(tAdd, panelTab == 2, true);
+        stylePanelTabBtn(tAdd, panelTab == 2);
         tAdd.setOnClickListener(v -> showPanelTab(2));
         btns.add(tAdd);
+
+        // v6.1: 11va button — 🔒 App Lock. Haalat label me dikhti
+        // hai; dabane par content area me lock ka form khulta hai.
+        Button tLock = panelButton("🔒 App Lock" + (pLock ? " • ON" : ""));
+        stylePanelTabBtn(tLock, panelTab == 3);
+        tLock.setOnClickListener(v -> { lockFormMode = 0; showPanelTab(3); });
+        btns.add(tLock);
 
         // 3-3 ke rows (wrap-grid ka seedha tareeka)
         LinearLayout row = null;
@@ -761,29 +783,19 @@ public class MainActivity extends Activity {
         View child;
         if (tab == 0) child = buildPanelHistoryView();
         else if (tab == 1) child = buildPanelScriptsView();
-        else child = buildPanelAddView();
+        else if (tab == 2) child = buildPanelAddView();
+        else child = buildPanelLockView();
         panelContent.addView(child, new FrameLayout.LayoutParams(
                 ViewGroup.LayoutParams.MATCH_PARENT,
                 ViewGroup.LayoutParams.MATCH_PARENT));
     }
 
     /** Panel ke andar wali History view — purani secret history hi
-     *  hai (wahi list, wahi saaf-karo button). HTML apps me sirf ek
-     *  dhundla note dikhta hai. */
+     *  hai (wahi list, wahi saaf-karo button). v6.1: dono type ke
+     *  apps me — HTML apps ki local pages bhi record hoti hain. */
     private View buildPanelHistoryView() {
         LinearLayout col = new LinearLayout(this);
         col.setOrientation(LinearLayout.VERTICAL);
-        if (!isUrlType()) {
-            TextView note = new TextView(this);
-            note.setText("History सिर्फ़ URL apps में होती है");
-            note.setTextSize(14);
-            note.setTextColor(0xFF757575);
-            note.setAlpha(0.6f);
-            note.setGravity(Gravity.CENTER);
-            note.setPadding(dp(20), dp(30), dp(20), dp(30));
-            col.addView(note);
-            return col;
-        }
         FrameLayout middle = new FrameLayout(this);
         final ListView list = new ListView(this);
         list.setDividerHeight(1);
@@ -851,8 +863,13 @@ public class MainActivity extends Activity {
         for (int i = 0; i < presets.length(); i++) {
             JSONObject p = presets.optJSONObject(i);
             if (p != null) {
+                // DHYAAN (v6.1, Fix 2): optString("power") key na ho
+                // to "" (khaali string) deta hai, null NAHI — isiliye
+                // has() se pakka null banao; warna scriptRow har
+                // preset ko hi power script samajh baithta tha.
+                String pw = p.has("power") ? p.optString("power") : null;
                 col.addView(scriptRow(p.optString("id"), p.optString("title"),
-                        p.optString("desc"), p.optString("power"), false), lpWrap(8));
+                        p.optString("desc"), pw, false), lpWrap(8));
             }
         }
         if (pUserScripts.length() > 0) {
@@ -884,7 +901,21 @@ public class MainActivity extends Activity {
     /** Scripts view ki ek row. Power scripts (bgPlay/pip) ka toggle
      *  asal native flag badalta hai — koi alag script-flag nahi banta. */
     private View scriptRow(final String id, String title, String desc,
-                           final String power, final boolean isUser) {
+                           String power, final boolean isUser) {
+        // v6.1 FIX 2 ki jad yahin hai: v6.0 me caller
+        // p.optString("power") bhejta tha — bina "power" key wale
+        // preset ke liye woh "" (khaali string) hota hai, null NAHI.
+        // Neeche ki jaanch `power != null` isliye HAR preset row par
+        // sach ho jati thi, aur ("bgPlay".equals(power) jhooth hone
+        // par) else-arm EK HI shared flag pPip ko dikhati/palatti
+        // thi — saari preset scripts ek saath ON/OFF hoti nazar
+        // aati theen, aur pApplied ko preset rows kabhi chhooti hi
+        // nahi theen (koi preset asal me lagta hi nahi tha). Ab
+        // khaali power ko yahan bhi null mana jata hai, aur caller
+        // bhi has() se null hi bhejta hai — har script ka toggle
+        // bilkul alag: preset/user id pApplied me, power scripts
+        // (bg-play/pip-mode) apne native flags (pBg/pPip) me.
+        final String pw = (power == null || power.isEmpty()) ? null : power;
         LinearLayout row = new LinearLayout(this);
         row.setOrientation(LinearLayout.HORIZONTAL);
         row.setGravity(Gravity.CENTER_VERTICAL);
@@ -907,14 +938,14 @@ public class MainActivity extends Activity {
         row.addView(texts, new LinearLayout.LayoutParams(0,
                 LinearLayout.LayoutParams.WRAP_CONTENT, 1f));
 
-        final boolean on = power != null
-                ? ("bgPlay".equals(power) ? pBg : pPip)
+        final boolean on = pw != null
+                ? ("bgPlay".equals(pw) ? pBg : pPip)
                 : pApplied.contains(id);
         Button tog = panelButton(on ? "⏻ ON" : "⏻ OFF");
-        stylePanelToggle(tog, on, true);
+        stylePanelToggle(tog, on);
         tog.setOnClickListener(v -> {
-            if (power != null) {
-                if ("bgPlay".equals(power)) { pBg = !pBg; updateBgService(); }
+            if (pw != null) {
+                if ("bgPlay".equals(pw)) { pBg = !pBg; updateBgService(); }
                 else { pPip = !pPip; }
                 savePanelState();
             } else {
@@ -929,7 +960,7 @@ public class MainActivity extends Activity {
 
         if (isUser) {
             Button del = panelButton("🗑");
-            stylePanelToggle(del, false, true);
+            stylePanelToggle(del, false);
             LinearLayout.LayoutParams dp2 = new LinearLayout.LayoutParams(
                     LinearLayout.LayoutParams.WRAP_CONTENT,
                     LinearLayout.LayoutParams.WRAP_CONTENT);
@@ -1143,8 +1174,8 @@ public class MainActivity extends Activity {
     // ---------------- v6.0: panel state (SharedPreferences "sp_panel")
 
     /** Pehli baar chalne par panel ki haalat config se seed hoti hai.
-     *  Order: (1) type ke defaults — URL apps me adBlock/gestures/
-     *  history ON, baaki OFF; (2) v5.3 flat keys, agar config me
+     *  Order: (1) samaan defaults — DONO type me adBlock/gestures/
+     *  history ON, baaki OFF (v6.1); (2) v5.3 flat keys, agar config me
      *  maujood hain to woh jeette hain (v5.3-bane apps ka vyavhaar
      *  bilkul waisa hi rehta hai); (3) v6 ka panelDefaults object;
      *  (4) defaultScripts — power wale (bg-play/pip-mode) flags ban
@@ -1152,9 +1183,8 @@ public class MainActivity extends Activity {
     private void seedPanelIfNeeded() {
         SharedPreferences sp = getSharedPreferences(PANEL_PREFS, MODE_PRIVATE);
         if (sp.getBoolean("inited", false)) return;
-        boolean url = isUrlType();
         boolean night = false, full = false, bg = false, pip = false;
-        boolean ad = url, gest = url, hist = url, desk = false;
+        boolean ad = true, gest = true, hist = true, desk = false;
         if (cfgSeedHasNight) night = cfgSeedNight;
         if (cfgSeedHasFull) full = cfgSeedFull;
         if (cfgSeedHasAd) ad = cfgSeedAd;
@@ -1190,6 +1220,8 @@ public class MainActivity extends Activity {
                     .putBoolean("gest", gest)
                     .putBoolean("hist", hist)
                     .putBoolean("desk", desk)
+                    .putBoolean("lock", false)
+                    .putString("pin_hash", "")
                     .putString("applied", new JSONArray(new ArrayList<>(applied)).toString())
                     .putString("user_scripts", "[]")
                     .apply();
@@ -1206,6 +1238,12 @@ public class MainActivity extends Activity {
         pGest = sp.getBoolean("gest", false);
         pHist = sp.getBoolean("hist", false);
         pDesk = sp.getBoolean("desk", false);
+        // v6.1 App Lock: purane apps me ye keys maujood hi nahi
+        // hongi — defaults (OFF / khaali hash) se woh bilkul pehle
+        // ki tarah chalte hain.
+        pLock = sp.getBoolean("lock", false);
+        pPinHash = sp.getString("pin_hash", "");
+        if (pPinHash == null) pPinHash = "";
         pApplied.clear();
         try {
             JSONArray arr = new JSONArray(sp.getString("applied", "[]"));
@@ -1233,6 +1271,8 @@ public class MainActivity extends Activity {
                     .putBoolean("gest", pGest)
                     .putBoolean("hist", pHist)
                     .putBoolean("desk", pDesk)
+                    .putBoolean("lock", pLock)
+                    .putString("pin_hash", pPinHash == null ? "" : pPinHash)
                     .putString("applied",
                             new JSONArray(new ArrayList<>(pApplied)).toString())
                     .putString("user_scripts", pUserScripts.toString())
@@ -1251,6 +1291,259 @@ public class MainActivity extends Activity {
             pApplied.remove(id);
             savePanelState();
         } catch (Exception ignored) { }
+    }
+
+    // ---------------- v6.1: App Lock (app level, panel se control)
+
+    /** PIN: sirf digits, 4–6 ank. */
+    private static boolean validPin(String pin) {
+        if (pin == null || pin.length() < 4 || pin.length() > 6) return false;
+        for (int i = 0; i < pin.length(); i++) {
+            if (!Character.isDigit(pin.charAt(i))) return false;
+        }
+        return true;
+    }
+
+    /** PIN ka SHA-256 hash (hex) — asli PIN kabhi save nahi hota. */
+    private static String sha256Hex(String text) {
+        try {
+            java.security.MessageDigest md =
+                    java.security.MessageDigest.getInstance("SHA-256");
+            byte[] d = md.digest(text.getBytes(StandardCharsets.UTF_8));
+            StringBuilder sb = new StringBuilder();
+            for (byte b : d) sb.append(String.format(Locale.ROOT, "%02x", b));
+            return sb.toString();
+        } catch (Exception e) {
+            return "";
+        }
+    }
+
+    private boolean pinMatches(String pin) {
+        return pin != null && !pPinHash.isEmpty()
+                && sha256Hex(pin).equals(pPinHash);
+    }
+
+    private EditText panelPinField(String hint) {
+        EditText e = panelField(hint);
+        e.setSingleLine(true);
+        e.setInputType(android.text.InputType.TYPE_CLASS_NUMBER
+                | android.text.InputType.TYPE_NUMBER_VARIATION_PASSWORD);
+        e.setFilters(new android.text.InputFilter[]{
+                new android.text.InputFilter.LengthFilter(6)});
+        return e;
+    }
+
+    /** Panel ki App Lock view (tab 3): PIN banana / lock on-off /
+     *  PIN badalna — sab native views me, aur band/chalu/badlav
+     *  current-PIN ki jaanch ke baad hi. lockFormMode: 0 = mukhya
+     *  form, 2 = PIN badlo (current PIN sahi padne ke baad). PIN
+     *  bana hi na ho to seedha banana wala form (mode 1 jaisa). */
+    private View buildPanelLockView() {
+        ScrollView scroll = new ScrollView(this);
+        LinearLayout col = new LinearLayout(this);
+        col.setOrientation(LinearLayout.VERTICAL);
+        col.setPadding(dp(12), dp(10), dp(12), dp(12));
+        scroll.addView(col);
+
+        final boolean hasPin = !pPinHash.isEmpty();
+        final int mode = !hasPin ? 1 : lockFormMode;
+
+        TextView st = new TextView(this);
+        st.setTextSize(13.5f);
+        st.setTextColor(0xFF424242);
+        if (!hasPin) {
+            st.setText("Abhi koi PIN nahi bana hai. 4–6 ankon ka PIN banao — "
+                    + "App Lock ON hote hi app khulne par, aur background se "
+                    + "wapas aane par (10 second ki grace ke baad), wahi PIN "
+                    + "manga jayega. Bina PIN ke page ka kuch nahi dikhega.");
+        } else if (mode == 2) {
+            st.setText("Current PIN sahi paya gaya hai. Ab naya PIN banao:");
+        } else {
+            st.setText("App Lock filhaal " + (pLock ? "ON ✅" : "OFF")
+                    + " hai. Lock band/chalu karne ya PIN badalne se pehle "
+                    + "current PIN likho.");
+        }
+        col.addView(st);
+
+        if (mode == 1 || mode == 2) {
+            final EditText pin1 = panelPinField(
+                    mode == 2 ? "Naya PIN (4–6 ank)" : "PIN banao (4–6 ank)");
+            col.addView(pin1, lpWrap(10));
+            final EditText pin2 = panelPinField("Wahi PIN dobara likho");
+            col.addView(pin2, lpWrap(8));
+            Button savePin = new Button(this);
+            savePin.setText(mode == 2 ? "🔑 PIN badal do"
+                    : "🔒 PIN banakar Lock ON karo");
+            savePin.setAllCaps(false);
+            savePin.setOnClickListener(v -> {
+                String a = pin1.getText().toString().trim();
+                String b = pin2.getText().toString().trim();
+                if (!validPin(a)) {
+                    Toast.makeText(this,
+                            "PIN 4–6 ankon ka hona chahiye (sirf number)",
+                            Toast.LENGTH_LONG).show();
+                    return;
+                }
+                if (!a.equals(b)) {
+                    Toast.makeText(this,
+                            "Dono PIN ek jaise nahi hain — phir likho",
+                            Toast.LENGTH_LONG).show();
+                    return;
+                }
+                pPinHash = sha256Hex(a);
+                pLock = true;
+                lockFormMode = 0;
+                savePanelState();
+                refreshPanelButtons();
+                showPanelTab(3);
+                Toast.makeText(this, mode == 2
+                        ? "🔑 PIN badal gaya — Lock ON hai"
+                        : "🔒 App Lock ON ho gaya", Toast.LENGTH_SHORT).show();
+            });
+            col.addView(savePin, lpWrap(10));
+            if (mode == 2) {
+                Button cancel = new Button(this);
+                cancel.setText("↩️ Rehne do");
+                cancel.setAllCaps(false);
+                cancel.setOnClickListener(v -> {
+                    lockFormMode = 0;
+                    showPanelTab(3);
+                });
+                col.addView(cancel, lpWrap(8));
+            }
+            return scroll;
+        }
+
+        final EditText cur = panelPinField("Current PIN");
+        col.addView(cur, lpWrap(10));
+        Button toggle = new Button(this);
+        toggle.setText(pLock ? "🔓 Lock band karo" : "🔒 Lock chalu karo");
+        toggle.setAllCaps(false);
+        toggle.setOnClickListener(v -> {
+            if (!pinMatches(cur.getText().toString().trim())) {
+                Toast.makeText(this, "❌ Galat PIN — haalat nahi badli",
+                        Toast.LENGTH_LONG).show();
+                return;
+            }
+            pLock = !pLock;
+            savePanelState();
+            refreshPanelButtons();
+            showPanelTab(3);
+            Toast.makeText(this, pLock ? "🔒 App Lock ON" : "🔓 App Lock OFF ho gaya",
+                    Toast.LENGTH_SHORT).show();
+        });
+        col.addView(toggle, lpWrap(10));
+        Button change = new Button(this);
+        change.setText("🔑 PIN badlo");
+        change.setAllCaps(false);
+        change.setOnClickListener(v -> {
+            if (!pinMatches(cur.getText().toString().trim())) {
+                Toast.makeText(this, "❌ Pehle sahi current PIN likho",
+                        Toast.LENGTH_LONG).show();
+                return;
+            }
+            lockFormMode = 2;
+            showPanelTab(3);
+        });
+        col.addView(change, lpWrap(8));
+        return scroll;
+    }
+
+    /** Lock screen — poora native overlay: app ka naam + PIN field
+     *  + Unlock button. Jab tak sessionLocked hai, WebView
+     *  INVISIBLE rehta hai, isliye web content dikh hi nahi sakta.
+     *  Galat PIN par error wahi dikhta hai, screen band rehti hai. */
+    private void showLockScreen() {
+        if (lockOverlay != null) return;
+        FrameLayout ov = new FrameLayout(this);
+        ov.setBackgroundColor(0xFF121212);
+        LinearLayout col = new LinearLayout(this);
+        col.setOrientation(LinearLayout.VERTICAL);
+        col.setGravity(Gravity.CENTER);
+        col.setPadding(dp(32), dp(32), dp(32), dp(32));
+
+        TextView lockIcon = new TextView(this);
+        lockIcon.setText("🔒");
+        lockIcon.setTextSize(44);
+        lockIcon.setGravity(Gravity.CENTER);
+        col.addView(lockIcon);
+
+        TextView name = new TextView(this);
+        try {
+            name.setText(getApplicationInfo().loadLabel(getPackageManager()).toString());
+        } catch (Exception e) {
+            name.setText("App");
+        }
+        name.setTextSize(20);
+        name.setTextColor(0xFFFFFFFF);
+        name.setTypeface(null, android.graphics.Typeface.BOLD);
+        name.setGravity(Gravity.CENTER);
+        col.addView(name, lpWrap(8));
+
+        TextView sub = new TextView(this);
+        sub.setText("Khulne ke liye PIN likho");
+        sub.setTextSize(13);
+        sub.setTextColor(0xFFBDBDBD);
+        sub.setGravity(Gravity.CENTER);
+        col.addView(sub, lpWrap(4));
+
+        final EditText pinIn = new EditText(this);
+        pinIn.setHint("PIN");
+        pinIn.setHintTextColor(0xFF9E9E9E);
+        pinIn.setTextColor(0xFFFFFFFF);
+        pinIn.setTextSize(18);
+        pinIn.setGravity(Gravity.CENTER);
+        pinIn.setSingleLine(true);
+        pinIn.setInputType(android.text.InputType.TYPE_CLASS_NUMBER
+                | android.text.InputType.TYPE_NUMBER_VARIATION_PASSWORD);
+        pinIn.setFilters(new android.text.InputFilter[]{
+                new android.text.InputFilter.LengthFilter(6)});
+        GradientDrawable pg = new GradientDrawable();
+        pg.setColor(0xFF1E1E1E);
+        pg.setCornerRadius(dp(10));
+        pg.setStroke(dp(1), 0xFF616161);
+        pinIn.setBackground(pg);
+        pinIn.setPadding(dp(14), dp(12), dp(14), dp(12));
+        col.addView(pinIn, lpWrap(16));
+
+        final TextView err = new TextView(this);
+        err.setTextSize(13);
+        err.setTextColor(0xFFEF9A9A);
+        err.setGravity(Gravity.CENTER);
+        err.setVisibility(View.GONE);
+        col.addView(err, lpWrap(8));
+
+        Button unlock = new Button(this);
+        unlock.setText("🔓 Unlock");
+        unlock.setAllCaps(false);
+        unlock.setOnClickListener(v -> {
+            if (pinMatches(pinIn.getText().toString().trim())) {
+                unlockApp();
+            } else {
+                err.setText("❌ Galat PIN — phir koshish karo");
+                err.setVisibility(View.VISIBLE);
+                pinIn.setText("");
+            }
+        });
+        col.addView(unlock, lpWrap(12));
+
+        ov.addView(col, new FrameLayout.LayoutParams(
+                ViewGroup.LayoutParams.MATCH_PARENT,
+                ViewGroup.LayoutParams.MATCH_PARENT));
+        rootLayout.addView(ov, new FrameLayout.LayoutParams(
+                ViewGroup.LayoutParams.MATCH_PARENT,
+                ViewGroup.LayoutParams.MATCH_PARENT));
+        lockOverlay = ov;
+    }
+
+    private void unlockApp() {
+        sessionLocked = false;
+        backgroundAt = 0;
+        if (lockOverlay != null) {
+            rootLayout.removeView(lockOverlay);
+            lockOverlay = null;
+        }
+        if (webView != null) webView.setVisibility(View.VISIBLE);
     }
 
     /** Full Screen toggle: immersive + screen-on turant lagta/hattata hai. */
@@ -1633,6 +1926,17 @@ public class MainActivity extends Activity {
     @Override
     protected void onResume() {
         super.onResume();
+        // v6.1 App Lock: background se wapas aaye aur grace (10
+        // second) beet gaya ho to lock screen phir se — jhat se
+        // wapas aane (notification shade waghera) par baar-baar PIN
+        // nahi mangta.
+        if (pLock && !sessionLocked && backgroundAt > 0
+                && System.currentTimeMillis() - backgroundAt > 10000) {
+            sessionLocked = true;
+            if (webView != null) webView.setVisibility(View.INVISIBLE);
+            showLockScreen();
+        }
+        backgroundAt = 0;
         try { webView.onResume(); } catch (Exception ignored) { }
         if (pFull) applyImmersive();
     }
@@ -1644,10 +1948,18 @@ public class MainActivity extends Activity {
         // saaf band ho. PiP ke andar rehte hue activity onStop par
         // aati hi nahi, isliye ye PiP ko nahi kaat-ta.
         if (customView != null && !inPip) exitFullscreen();
+        // v6.1 App Lock: background jaate hi waqt note karo — wapas
+        // aane par grace (10s) se zyada der ho gayi ho to phir lock.
+        if (pLock && !sessionLocked) {
+            backgroundAt = System.currentTimeMillis();
+        }
     }
 
     @Override
     public void onBackPressed() {
+        if (lockOverlay != null) {
+            return; // v6.1: Lock screen par Back kaam nahi karta
+        }
         if (panelOverlay != null) {
             closePanel();
         } else if (customView != null) {
