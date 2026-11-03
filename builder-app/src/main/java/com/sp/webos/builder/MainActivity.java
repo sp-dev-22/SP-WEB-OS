@@ -1801,7 +1801,9 @@ public class MainActivity extends Activity {
         }
     }
 
-    /** Icon Maker (assets/icon_maker.html) ko ek dialog ke andar kholta hai. */
+    /** Icon Maker (assets/icon_maker.html) ko ek dialog ke andar kholta hai.
+     *  v5.2: dialog ka content ek vertical layout hai — upar WebView
+     *  (weight 1) aur neeche ek button row: Saved Icons picker + Band Karo. */
     private void openIconMaker() {
         WebView wv = new WebView(this);
         WebSettings ws = wv.getSettings();
@@ -1812,15 +1814,42 @@ public class MainActivity extends Activity {
         // dialog ke andar text box par tap karne se keyboard nahi khulta.
         wv.setFocusable(true);
         wv.setFocusableInTouchMode(true);
-        int h = (int) (580 * getResources().getDisplayMetrics().density);
-        wv.setLayoutParams(new LinearLayout.LayoutParams(
-                LinearLayout.LayoutParams.MATCH_PARENT, h));
         wv.loadUrl("file:///android_asset/icon_maker.html");
-        AlertDialog dialog = new AlertDialog.Builder(this)
-                .setTitle("\uD83C\uDFA8 App Icon Banao")
-                .setView(wv)
-                .setNegativeButton("Band Karo", null)
+
+        LinearLayout wrap = new LinearLayout(this);
+        wrap.setOrientation(LinearLayout.VERTICAL);
+        int h = (int) (580 * getResources().getDisplayMetrics().density);
+        wrap.setLayoutParams(new LinearLayout.LayoutParams(
+                LinearLayout.LayoutParams.MATCH_PARENT, h));
+        wrap.addView(wv, new LinearLayout.LayoutParams(
+                LinearLayout.LayoutParams.MATCH_PARENT, 0, 1f));
+
+        LinearLayout btnRow = new LinearLayout(this);
+        btnRow.setOrientation(LinearLayout.HORIZONTAL);
+        btnRow.setPadding(dp(10), dp(8), dp(10), dp(10));
+        Button savedBtn = new Button(this);
+        savedBtn.setText("🖼️ Saved Icons से चुनो");
+        styleSmall(savedBtn);
+        savedBtn.setTextColor(PINK_TEXT);
+        Button closeBtn = new Button(this);
+        closeBtn.setText("✖ बंद करो");
+        styleSmall(closeBtn);
+        btnRow.addView(savedBtn, new LinearLayout.LayoutParams(0,
+                LinearLayout.LayoutParams.WRAP_CONTENT, 1f));
+        LinearLayout.LayoutParams half2 = new LinearLayout.LayoutParams(0,
+                LinearLayout.LayoutParams.WRAP_CONTENT, 1f);
+        half2.leftMargin = dp(8);
+        btnRow.addView(closeBtn, half2);
+        wrap.addView(btnRow, new LinearLayout.LayoutParams(
+                LinearLayout.LayoutParams.MATCH_PARENT,
+                LinearLayout.LayoutParams.WRAP_CONTENT));
+
+        final AlertDialog dialog = new AlertDialog.Builder(this)
+                .setTitle("🎨 App Icon Banao")
+                .setView(wrap)
                 .create();
+        closeBtn.setOnClickListener(v -> dialog.dismiss());
+        savedBtn.setOnClickListener(v -> showSavedIconsPicker(dialog));
         dialog.show();
         // Dialog window ko IME (keyboard) allow karna bhi zaroori hai —
         // SOFT_INPUT_ADJUST_RESIZE ke bina WebView ke input focus to le
@@ -1865,6 +1894,246 @@ public class MainActivity extends Activity {
                 refreshIconPreview();
             });
         }
+    }
+
+
+    // ------------------------------------------------------ saved icons picker
+
+    /** Downloads/SP WEB OS/<AppName>/icon.png ka ek record. */
+    private static class SavedIconItem {
+        String appName;   // sub-folder ka naam (khali = seedha SP WEB OS folder)
+        Uri uri;          // API 29+ MediaStore
+        File local;       // API 26-28 direct file
+    }
+
+    /** Downloads ke app-folders se saare saved icon.png ikatthe karta hai.
+     *  HTMLs/APKs tabs wala hi tareeka: API 29+ MediaStore, purane Android
+     *  par folder walk. Har jagah try/catch — picker kabhi crash nahi hota. */
+    private List<SavedIconItem> querySavedIcons() {
+        List<SavedIconItem> out = new ArrayList<>();
+        if (Build.VERSION.SDK_INT >= 29) {
+            Cursor c = null;
+            try {
+                Uri coll = MediaStore.Downloads.EXTERNAL_CONTENT_URI;
+                String[] proj = {
+                        MediaStore.Downloads._ID,
+                        MediaStore.Downloads.DISPLAY_NAME,
+                        MediaStore.Downloads.RELATIVE_PATH
+                };
+                String sel = MediaStore.Downloads.RELATIVE_PATH + " LIKE ?";
+                String[] args = {Environment.DIRECTORY_DOWNLOADS + "/SP WEB OS%"};
+                c = getContentResolver().query(coll, proj, sel, args,
+                        MediaStore.Downloads.DATE_MODIFIED + " DESC");
+                if (c != null) {
+                    int idI = c.getColumnIndexOrThrow(MediaStore.Downloads._ID);
+                    int nameI = c.getColumnIndexOrThrow(MediaStore.Downloads.DISPLAY_NAME);
+                    int relI = c.getColumnIndexOrThrow(MediaStore.Downloads.RELATIVE_PATH);
+                    while (c.moveToNext()) {
+                        String nm = c.getString(nameI);
+                        if (nm == null || !nm.equalsIgnoreCase("icon.png")) continue;
+                        SavedIconItem it = new SavedIconItem();
+                        it.appName = appFolderFromRelativePath(c.getString(relI));
+                        it.uri = ContentUris.withAppendedId(coll, c.getLong(idI));
+                        out.add(it);
+                    }
+                }
+            } catch (Exception ignored) {
+                // Folder na mile / permission na ho — khaali list hi sahi.
+            } finally {
+                if (c != null) c.close();
+            }
+        } else {
+            try {
+                File base = new File(Environment.getExternalStoragePublicDirectory(
+                        Environment.DIRECTORY_DOWNLOADS), "SP WEB OS");
+                collectSavedIcons(base, "", out);
+            } catch (Exception ignored) { }
+        }
+        return out;
+    }
+
+    /** API 26-28: SP WEB OS folder aur uske app sub-folders me icon.png
+     *  dhoondhta hai (ek level gehra). */
+    private void collectSavedIcons(File dir, String appName, List<SavedIconItem> out) {
+        File[] fs = dir.listFiles();
+        if (fs == null) return;
+        for (File f : fs) {
+            if (f.isDirectory()) {
+                if (appName.isEmpty()) collectSavedIcons(f, f.getName(), out);
+            } else if (f.getName().equalsIgnoreCase("icon.png")) {
+                SavedIconItem it = new SavedIconItem();
+                it.appName = appName;
+                it.local = f;
+                out.add(it);
+            }
+        }
+    }
+
+    private byte[] readSavedIconBytes(SavedIconItem it) throws Exception {
+        InputStream raw = it.uri != null
+                ? getContentResolver().openInputStream(it.uri)
+                : new FileInputStream(it.local);
+        if (raw == null) throw new Exception("file khul nahi payi");
+        try (InputStream in = raw) {
+            ByteArrayOutputStream baos = new ByteArrayOutputStream();
+            byte[] buf = new byte[8192];
+            int n;
+            while ((n = in.read(buf)) != -1) baos.write(buf, 0, n);
+            return baos.toByteArray();
+        }
+    }
+
+    /** Saved Icons picker kholta hai: Downloads me bane hue apps ke
+     *  icon.png ki list. Kisi icon par tap = wohi is build ka custom
+     *  icon ban jata hai (cache wali file me jaakar). */
+    private void showSavedIconsPicker(final Dialog makerDialog) {
+        final LinearLayout listBox = new LinearLayout(this);
+        listBox.setOrientation(LinearLayout.VERTICAL);
+        ScrollView scroll = new ScrollView(this);
+        scroll.addView(listBox);
+        final AlertDialog picker = new AlertDialog.Builder(this)
+                .setTitle("🖼️ Saved Icons")
+                .setView(scroll)
+                .setNegativeButton("✖ बंद करो", null)
+                .create();
+        fillSavedIconsList(listBox, picker, makerDialog);
+        picker.show();
+    }
+
+    private void fillSavedIconsList(final LinearLayout listBox,
+                                    final Dialog picker,
+                                    final Dialog makerDialog) {
+        try {
+            listBox.removeAllViews();
+            List<SavedIconItem> icons = querySavedIcons();
+            if (icons.isEmpty()) {
+                TextView empty = bodyText("कोई saved icon नहीं मिला — पहले किसी app का "
+                        + "icon बनाकर build करो।");
+                empty.setPadding(dp(16), dp(16), dp(16), dp(16));
+                listBox.addView(empty);
+                return;
+            }
+            for (final SavedIconItem it : icons) {
+                listBox.addView(savedIconRow(it, picker, makerDialog, listBox), lp(6));
+            }
+        } catch (Exception e) {
+            try {
+                TextView err = bodyText("Icons load nahi ho paye: " + e.getMessage());
+                err.setPadding(dp(16), dp(16), dp(16), dp(16));
+                listBox.addView(err);
+            } catch (Exception ignored) { }
+        }
+    }
+
+    private LinearLayout savedIconRow(final SavedIconItem it, final Dialog picker,
+                                      final Dialog makerDialog,
+                                      final LinearLayout listBox) {
+        LinearLayout row = new LinearLayout(this);
+        row.setOrientation(LinearLayout.HORIZONTAL);
+        row.setGravity(Gravity.CENTER_VERTICAL);
+        row.setBackground(roundedBg(CARD_BG, 10, BORDER));
+        row.setPadding(dp(10), dp(8), dp(10), dp(8));
+
+        ImageView thumb = new ImageView(this);
+        try {
+            byte[] bytes = readSavedIconBytes(it);
+            Bitmap bmp = BitmapFactory.decodeByteArray(bytes, 0, bytes.length);
+            if (bmp != null) {
+                if (bmp.getWidth() > 96 || bmp.getHeight() > 96) {
+                    bmp = Bitmap.createScaledBitmap(bmp, 96, 96, true);
+                }
+                thumb.setImageBitmap(bmp);
+            }
+        } catch (Exception ignored) { }
+        row.addView(thumb, new LinearLayout.LayoutParams(dp(52), dp(52)));
+
+        TextView name = new TextView(this);
+        name.setText(it.appName.isEmpty() ? "SP WEB OS" : it.appName);
+        name.setTextSize(15);
+        name.setTextColor(DARK_TEXT);
+        name.setTypeface(null, Typeface.BOLD);
+        LinearLayout.LayoutParams np = new LinearLayout.LayoutParams(0,
+                LinearLayout.LayoutParams.WRAP_CONTENT, 1f);
+        np.leftMargin = dp(10);
+        row.addView(name, np);
+
+        Button del = new Button(this);
+        del.setText("🗑");
+        styleSmall(del);
+        del.setOnClickListener(v ->
+                confirmDeleteSavedIcon(it, listBox, picker, makerDialog));
+        row.addView(del);
+
+        row.setOnClickListener(v -> useSavedIcon(it, picker, makerDialog));
+        row.setOnLongClickListener(v -> {
+            confirmDeleteSavedIcon(it, listBox, picker, makerDialog);
+            return true;
+        });
+        return row;
+    }
+
+    /** Chuna hua saved icon cache wali custom-icon file me daal deta hai —
+     *  uske baad purana preview/build flow apne aap chal padta hai. */
+    private void useSavedIcon(SavedIconItem it, Dialog picker, Dialog makerDialog) {
+        try {
+            byte[] bytes = readSavedIconBytes(it);
+            try (OutputStream out = new FileOutputStream(customIconFile())) {
+                out.write(bytes);
+            }
+            refreshIconPreview();
+            Toast.makeText(this, "🎨 Icon चुन लिया: "
+                    + (it.appName.isEmpty() ? "SP WEB OS" : it.appName),
+                    Toast.LENGTH_SHORT).show();
+            if (picker != null) picker.dismiss();
+            if (makerDialog != null) makerDialog.dismiss();
+        } catch (Exception e) {
+            Toast.makeText(this, "Icon load nahi ho paya: " + e.getMessage(),
+                    Toast.LENGTH_LONG).show();
+        }
+    }
+
+    private void confirmDeleteSavedIcon(final SavedIconItem it,
+                                        final LinearLayout listBox,
+                                        final Dialog picker,
+                                        final Dialog makerDialog) {
+        new AlertDialog.Builder(this)
+                .setTitle("🗑️ Icon delete karo?")
+                .setMessage((it.appName.isEmpty() ? "SP WEB OS" : it.appName)
+                        + " ka saved icon.png Downloads se hat jayega. "
+                        + "Bane hue APK aur app par koi asar nahi padega.")
+                .setPositiveButton("Delete", (dialog, which) -> {
+                    boolean gone = false;
+                    if (it.uri != null) {
+                        try {
+                            gone = getContentResolver().delete(it.uri, null, null) > 0;
+                        } catch (RecoverableSecurityException e) {
+                            // System ka permission dialog khulega; is beech
+                            // picker band kar do taaki purani list na dikhe.
+                            if (picker != null) picker.dismiss();
+                            try {
+                                startIntentSenderForResult(
+                                        e.getUserAction().getActionIntent().getIntentSender(),
+                                        REQ_APK_DELETE, null, 0, 0, 0);
+                            } catch (Exception e2) {
+                                Toast.makeText(this, "Delete ke liye Files app use karo",
+                                        Toast.LENGTH_LONG).show();
+                            }
+                            return;
+                        } catch (Exception e) {
+                            Toast.makeText(this, "Delete nahi ho paya: " + e.getMessage(),
+                                    Toast.LENGTH_LONG).show();
+                            return;
+                        }
+                    } else if (it.local != null) {
+                        //noinspection ResultOfMethodCallIgnored
+                        gone = it.local.delete();
+                    }
+                    Toast.makeText(this, gone ? "Delete ho gaya 🗑️" : "Delete nahi ho paya",
+                            Toast.LENGTH_SHORT).show();
+                    fillSavedIconsList(listBox, picker, makerDialog);
+                })
+                .setNegativeButton("Cancel", null)
+                .show();
     }
 
     private byte[] readCustomIcon() {
