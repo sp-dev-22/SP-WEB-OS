@@ -27,6 +27,9 @@ import android.webkit.WebViewClient;
 import android.widget.FrameLayout;
 import android.widget.Toast;
 
+import java.io.ByteArrayOutputStream;
+import java.io.InputStream;
+import java.nio.charset.StandardCharsets;
 import java.util.ArrayList;
 import java.util.List;
 
@@ -241,7 +244,56 @@ public class MainActivity extends Activity {
         NotifyHelper.ensureChannel(this);
         webView.addJavascriptInterface(new SpWebOsBridge(), "SpWebOS");
 
-        webView.loadUrl("file:///android_asset/index.html");
+        // ---- Template kind (v5.1): har flavour apna TEMPLATE_KIND lata hai.
+        // "default" / "js3d" -> assets/index.html (js3d ke saath bandle
+        // three.min.js bhi assets me hota hai). "url" -> assets/url.txt me
+        // likhi website. "full" -> index.html + immersive fullscreen +
+        // screen hamesha on (kiosk style). Bridge aur file chooser sab
+        // flavours me bilkul ek jaise rehte hain.
+        String kind = BuildConfig.TEMPLATE_KIND;
+        if ("full".equals(kind)) {
+            getWindow().addFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON);
+            applyImmersive();
+        }
+        if ("url".equals(kind)) {
+            webView.loadUrl(readUrlFromAssets());
+        } else {
+            webView.loadUrl("file:///android_asset/index.html");
+        }
+    }
+
+    /** URL template: builder assets/url.txt me website ka pata likhta hai.
+     *  File na mile ya khaali ho to example.com khulta hai. */
+    private String readUrlFromAssets() {
+        try (InputStream in = getAssets().open("url.txt")) {
+            ByteArrayOutputStream baos = new ByteArrayOutputStream();
+            byte[] buf = new byte[1024];
+            int n;
+            while ((n = in.read(buf)) != -1) baos.write(buf, 0, n);
+            String u = new String(baos.toByteArray(), StandardCharsets.UTF_8).trim();
+            if (!u.isEmpty()) return u;
+        } catch (Exception ignored) {
+        }
+        return "https://example.com";
+    }
+
+    /** Fullscreen template: system bars chhupakar immersive mode. */
+    private void applyImmersive() {
+        getWindow().getDecorView().setSystemUiVisibility(
+                View.SYSTEM_UI_FLAG_IMMERSIVE_STICKY
+                        | View.SYSTEM_UI_FLAG_FULLSCREEN
+                        | View.SYSTEM_UI_FLAG_HIDE_NAVIGATION
+                        | View.SYSTEM_UI_FLAG_LAYOUT_FULLSCREEN
+                        | View.SYSTEM_UI_FLAG_LAYOUT_HIDE_NAVIGATION
+                        | View.SYSTEM_UI_FLAG_LAYOUT_STABLE);
+    }
+
+    @Override
+    public void onWindowFocusChanged(boolean hasFocus) {
+        super.onWindowFocusChanged(hasFocus);
+        // Dialog / permission prompt ke baad bars wapas aa jate hain —
+        // fullscreen template me focus milte hi immersive dobara lagao.
+        if (hasFocus && "full".equals(BuildConfig.TEMPLATE_KIND)) applyImmersive();
     }
 
     /**
@@ -340,7 +392,10 @@ public class MainActivity extends Activity {
         rootLayout.removeView(customView);
         customView = null;
         webView.setVisibility(View.VISIBLE);
-        getWindow().clearFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON);
+        // Fullscreen template me screen-on hamesha rehna chahiye.
+        if (!"full".equals(BuildConfig.TEMPLATE_KIND)) {
+            getWindow().clearFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON);
+        }
         if (customViewCallback != null) {
             customViewCallback.onCustomViewHidden();
             customViewCallback = null;
