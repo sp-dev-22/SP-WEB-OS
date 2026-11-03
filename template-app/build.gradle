@@ -56,7 +56,7 @@ def stageLegacyTemplateApk = tasks.register('stageLegacyTemplateApk', Copy) {
     into('build/outputs/apk/debug')
     rename { 'template-app-debug.apk' }
 }
-tasks.named('assembleDebug') { finalizedBy(stageLegacyTemplateApk) }
+tasks.matching { it.name == 'assembleDebug' }.configureEach { finalizedBy(stageLegacyTemplateApk) }
 
 // Launcher icons ship in this repo as base64 text files (icon-b64/) because
 // the repo is maintained through an API that cannot carry binary files.
