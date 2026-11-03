@@ -58,12 +58,16 @@ import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.Date;
 import java.util.HashMap;
+import java.util.HashSet;
+import java.util.LinkedHashSet;
+import java.util.Set;
 import java.util.List;
 import java.util.Locale;
 import java.util.Map;
 import java.util.regex.Matcher;
 import java.util.regex.Pattern;
 
+import org.json.JSONArray;
 import org.json.JSONObject;
 
 /**
@@ -97,17 +101,18 @@ public class MainActivity extends Activity {
     private static final String PREF_AUTO_SAVE_HTML = "auto_save_html";
     private static final String PREF_AUTO_SAVE_APK = "auto_save_apk";
     private static final String PREF_AUTO_SAVE_ICON = "auto_save_icon";
-    // Type + Features (v5.3): ek hi template; type aur feature choices
-    // prefs me yaad rehte hain aur har build me assets/config.json
-    // bankar generated app me jaate hain.
+    private static final String PREF_AUTO_SAVE_SCRIPTS = "auto_save_scripts";
+    // Type (v5.3 se): choice prefs me yaad rehti hai aur har build me
+    // assets/config.json bankar generated app me jaati hai.
     private static final String PREF_APP_TYPE = "app_type";
-    private static final String PREF_FEAT_FULLSCREEN = "feat_fullscreen";
-    private static final String PREF_FEAT_DARKPAGE = "feat_darkpage";
-    private static final String PREF_FEAT_CUSTOMCODE = "feat_customcode";
-    private static final String PREF_FEAT_ADBLOCK = "feat_adblock";
-    private static final String PREF_FEAT_HISTORY = "feat_history";
-    private static final String PREF_FEAT_GESTURES = "feat_gestures";
-    private static final String PREF_FEAT_3D = "feat_3d";
+    // v6.0: Library selection (HTML apps ke liye, build-time) +
+    // default-ON script selection + manual code — sab prefs me.
+    private static final String PREF_LIB_THREE = "lib_three";
+    private static final String PREF_LIB_CHART = "lib_chart";
+    private static final String PREF_LIB_KATEX = "lib_katex";
+    private static final String PREF_SEL_SCRIPTS = "selected_scripts";
+    private static final String PREF_MANUAL_JS = "manual_js";
+    private static final String PREF_MANUAL_CSS = "manual_css";
 
     private boolean darkMode;
     private int DARK_TEXT = 0xFF212121;   // mukhya text
@@ -154,10 +159,17 @@ public class MainActivity extends Activity {
     private EditText urlBox;
     private Button[] typeBtns;
     private String appType = "html";
-    private CheckBox cbFullscreen, cbDarkPage, cbCustomCode;
-    private CheckBox cbAdBlock, cbHistory, cbGestures, cb3d;
-    private LinearLayout customCodeBox;
-    private EditText jsBox, cssBox;
+    // v6.0 Home: libraries chips + scripts row (purane feature
+    // checkboxes hata diye gaye — features ab app ke panel me hain).
+    private LinearLayout libRow;
+    private TextView libNote;
+    private Button[] libBtns;
+    private boolean[] libSel = new boolean[3];
+    private Button scriptsBtn;
+    // v6.0: full-screen overlay pages (picker / features list) —
+    // Icon Maker wale contentFrame pattern par hi.
+    private View overlayPage;
+    private EditText pageJsBox, pageCssBox;
     private Button installBtn;
     private ImageView iconPreview;
     private TextView iconStatus;
@@ -176,11 +188,15 @@ public class MainActivity extends Activity {
     private View iconMakerPage;
     private WebView iconMakerWebView;
 
+    // Scripts tab (v6.0)
+    private LinearLayout scriptsTabList;
+
     // Tabs
     private static final int TAB_HOME = 0;
     private static final int TAB_HTML = 1;
     private static final int TAB_APK = 2;
     private static final int TAB_SETTINGS = 3;
+    private static final int TAB_SCRIPTS = 4;
     private ScrollView[] tabViews;
     private Button[] tabBtns;
     private int currentTab = TAB_HOME;
@@ -314,7 +330,12 @@ public class MainActivity extends Activity {
         settingsScroll.addView(buildSettingsTab());
         content.addView(settingsScroll);
 
-        tabViews = new ScrollView[]{homeScroll, htmlScroll, apkScroll, settingsScroll};
+        ScrollView scriptsScroll = new ScrollView(this);
+        scriptsScroll.addView(buildScriptsTab());
+        content.addView(scriptsScroll);
+
+        tabViews = new ScrollView[]{homeScroll, htmlScroll, apkScroll, settingsScroll,
+                scriptsScroll};
 
         // Tab bar ke upar patli si border line
         View divider = new View(this);
@@ -328,7 +349,7 @@ public class MainActivity extends Activity {
         tabBar.setPadding(dp(6), dp(6), dp(6), dp(6));
         root.addView(tabBar);
 
-        String[] labels = {"🏠 Home", "📄 HTMLs", "📦 APKs", "⚙️ Settings"};
+        String[] labels = {"🏠 Home", "📄 HTMLs", "📦 APKs", "⚙️ Settings", "📜 Scripts"};
         tabBtns = new Button[labels.length];
         for (int i = 0; i < labels.length; i++) {
             final int idx = i;
@@ -367,6 +388,10 @@ public class MainActivity extends Activity {
      *  Dialog hain, un par Android khud Back sambhalta hai.) */
     @Override
     public void onBackPressed() {
+        if (overlayPage != null) {
+            closeOverlayPage();
+            return;
+        }
         if (iconMakerPage != null) {
             closeIconMaker();
             return;
@@ -375,8 +400,10 @@ public class MainActivity extends Activity {
     }
 
     private void showTab(int idx) {
-        // Icon Maker page khula ho to tab badalne se pehle use band karo,
-        // warna page naye tab ke upar chipka reh jayega.
+        // Koi overlay page (Icon Maker / Scripts picker / Features
+        // list) khula ho to tab badalne se pehle use band karo, warna
+        // page naye tab ke upar chipka reh jayega.
+        if (overlayPage != null) closeOverlayPage();
         if (iconMakerPage != null) closeIconMaker();
         currentTab = idx;
         for (int i = 0; i < tabViews.length; i++) {
@@ -388,6 +415,7 @@ public class MainActivity extends Activity {
         }
         if (idx == TAB_HTML) refreshHtmlList();
         if (idx == TAB_APK) refreshApkList();
+        if (idx == TAB_SCRIPTS) refreshScriptsTab();
     }
 
     /** Ek tab ke content ka base column (padding ke saath). */
@@ -488,51 +516,62 @@ public class MainActivity extends Activity {
         urlBox.setVisibility(View.GONE);
         root.addView(urlBox, lp(8));
 
-        root.addView(heading("✨ Features", 15), lp(12));
-        cbFullscreen = featureCheck(PREF_FEAT_FULLSCREEN, "⛶ Full Screen — सभी apps");
-        root.addView(cbFullscreen, lp(2));
-        cbDarkPage = featureCheck(PREF_FEAT_DARKPAGE, "🌙 Page Dark Mode — सभी apps");
-        root.addView(cbDarkPage, lp(2));
-        cbCustomCode = featureCheck(PREF_FEAT_CUSTOMCODE,
-                "🧩 Custom JS/CSS (Extension) — सभी apps");
-        root.addView(cbCustomCode, lp(2));
+        // ---- v6.0: Libraries (build-time chunav; HTML apps ke liye
+        // hi — ye akeli cheez hai jo APK ka size sach me badhati hai).
+        root.addView(heading("📚 Libraries", 15), lp(12));
+        libRow = new LinearLayout(this);
+        libRow.setOrientation(LinearLayout.HORIZONTAL);
+        final String[] libLabels = {"🎮 Three.js", "📊 Chart.js", "∑ KaTeX"};
+        libBtns = new Button[3];
+        SharedPreferences lprefs = getSharedPreferences(PREFS_NAME, MODE_PRIVATE);
+        libSel[0] = lprefs.getBoolean(PREF_LIB_THREE, false);
+        libSel[1] = lprefs.getBoolean(PREF_LIB_CHART, false);
+        libSel[2] = lprefs.getBoolean(PREF_LIB_KATEX, false);
+        for (int i = 0; i < 3; i++) {
+            final int li = i;
+            Button b = new Button(this);
+            b.setText(libLabels[i]);
+            styleSmall(b);
+            b.setTextSize(12);
+            b.setOnClickListener(v -> {
+                libSel[li] = !libSel[li];
+                String key = li == 0 ? PREF_LIB_THREE
+                        : li == 1 ? PREF_LIB_CHART : PREF_LIB_KATEX;
+                getSharedPreferences(PREFS_NAME, MODE_PRIVATE).edit()
+                        .putBoolean(key, libSel[li]).apply();
+                refreshLibUi();
+            });
+            LinearLayout.LayoutParams bp = new LinearLayout.LayoutParams(
+                    0, LinearLayout.LayoutParams.WRAP_CONTENT, 1f);
+            if (i > 0) bp.leftMargin = dp(6);
+            libRow.addView(b, bp);
+            libBtns[i] = b;
+        }
+        root.addView(libRow, lp(6));
+        libNote = new TextView(this);
+        libNote.setTextSize(12);
+        libNote.setTextColor(GREY_TEXT);
+        root.addView(libNote, lp(4));
 
-        customCodeBox = new LinearLayout(this);
-        customCodeBox.setOrientation(LinearLayout.VERTICAL);
-        jsBox = new EditText(this);
-        jsBox.setHint("JS code (optional) — har page load ke baad chalega");
-        jsBox.setMinLines(3);
-        jsBox.setGravity(Gravity.TOP);
-        jsBox.setTextSize(12);
-        styleField(jsBox);
-        customCodeBox.addView(jsBox, lp(2));
-        cssBox = new EditText(this);
-        cssBox.setHint("CSS code (optional) — page ki styling badlega");
-        cssBox.setMinLines(3);
-        cssBox.setGravity(Gravity.TOP);
-        cssBox.setTextSize(12);
-        styleField(cssBox);
-        customCodeBox.addView(cssBox, lp(6));
-        customCodeBox.setVisibility(View.GONE);
-        root.addView(customCodeBox, lp(4));
-
-        cbAdBlock = featureCheck(PREF_FEAT_ADBLOCK, "🚫 Ad Block — सिर्फ़ URL apps");
-        root.addView(cbAdBlock, lp(2));
-        cbHistory = featureCheck(PREF_FEAT_HISTORY,
-                "🤫 Browse History (secret •) — सिर्फ़ URL apps");
-        root.addView(cbHistory, lp(2));
-        cbGestures = featureCheck(PREF_FEAT_GESTURES, "👆 Swipe Gestures — सिर्फ़ URL apps");
-        root.addView(cbGestures, lp(2));
-        cb3d = featureCheck(PREF_FEAT_3D, "🎮 3D JS Library — सिर्फ़ HTML apps");
-        root.addView(cb3d, lp(2));
-        root.addView(bodyText("Features freely combine hote hain — jitne chaaho "
-                + "ek saath. Jo feature kisi type par nahi chalta, woh us type "
-                + "par apne aap band (OFF) ho jata hai."), lp(4));
+        // ---- v6.0: Scripts (default-ON chunav + apna code). Features
+        // ab builder me tick NAHI hote — woh generated app ke andar
+        // secret • panel se LIVE badalte hain.
+        root.addView(heading("📜 Scripts", 15), lp(12));
+        scriptsBtn = new Button(this);
+        styleOutline(scriptsBtn);
+        scriptsBtn.setOnClickListener(v -> openScriptsPicker());
+        root.addView(scriptsBtn, lp(6));
+        root.addView(bodyText("Features (Night, Full Screen, Ad Block, "
+                + "Gestures…) ab APK banate samay tick nahi hote — woh "
+                + "har generated app ke andar chhupe hue • dot wale "
+                + "Control Panel se on/off hote hain. Yahan sirf woh "
+                + "scripts chuno jo app me pehle din se ON rahein."), lp(4));
 
         String savedType = getSharedPreferences(PREFS_NAME, MODE_PRIVATE)
                 .getString(PREF_APP_TYPE, "html");
         selectType("url".equals(savedType) ? "url" : "html");
-        updateCustomCodeVisibility();
+        refreshLibUi();
+        refreshScriptsBtn();
 
         Button iconBtn = new Button(this);
         iconBtn.setText("🎨 App Icon Banao");
@@ -610,10 +649,17 @@ public class MainActivity extends Activity {
         root.addView(bodyText(
                 "Har build ke baad files app ke andar NAHI, seedha "
                 + "'Downloads/SP WEB OS/<AppName>/' folder me save hoti hain. "
-                + "Kya-kya save ho, ye teen toggles tay karte hain (teeno default ON)."), lp(6));
+                + "Kya-kya save ho, ye chaar toggles tay karte hain (chaaron default ON). Script save karne par uski Downloads copy (Scripts folder) chauthe toggle se banti hai."), lp(6));
         addSaveToggle(root, "Auto Save HTMLs", PREF_AUTO_SAVE_HTML);
         addSaveToggle(root, "Auto Save Apks", PREF_AUTO_SAVE_APK);
         addSaveToggle(root, "Auto Save Icons", PREF_AUTO_SAVE_ICON);
+        addSaveToggle(root, "Auto Save Scripts", PREF_AUTO_SAVE_SCRIPTS);
+
+        Button featBtn = new Button(this);
+        featBtn.setText("📋 All Features List");
+        stylePrimary(featBtn);
+        featBtn.setOnClickListener(v -> openFeaturesList());
+        root.addView(featBtn, lp(16));
 
         root.addView(heading("📖 Kaise istemaal karen", 16), lp(16));
         root.addView(bodyText(
@@ -621,8 +667,10 @@ public class MainActivity extends Activity {
                 + "2.  App ka naam do (optional). Naam se alag Package ID banta hai, "
                 + "taaki kai apps ek saath phone par reh saken. Naam khaali ho to HTML ke "
                 + "<title> ya file ke naam se apne aap ban jata hai. Phir App Type "
-                + "(📄 HTML / 🌐 URL) chuno aur ✨ Features tick karo — features "
-                + "freely combine hote hain.\n"
+                + "(📄 HTML / 🌐 URL) chuno. Features ab yahan tick nahi hote — "
+                + "woh bane hue app ke andar • Control Panel se LIVE badalte "
+                + "hain. Chaho to 📚 Libraries (sirf HTML) aur 📜 Scripts "
+                + "(default-ON) chun lo.\n"
                 + "3.  Chaho to '🎨 App Icon Banao' se apna icon design karo — background "
                 + "colour aur pattern tum khud chunte ho; purana bana icon 'Saved "
                 + "Icons' se bhi chun sakte ho.\n"
@@ -740,25 +788,27 @@ public class MainActivity extends Activity {
                 + "Home par aao → phir APK banao. Wahi design launcher par "
                 + "icon banega. Purana bana hua icon lagana ho to icon page "
                 + "ke neeche '🖼️ Saved Icons से चुनो' dabao.");
-        helpQa(col, "Q3. App Type aur Features kya hain?",
+        helpQa(col, "Q3. App Type kya hai? Features ab kahan gaye?",
                 "Do Type hain: 📄 HTML App (single-file HTML se app) aur 🌐 URL "
-                + "App (website ke URL se app). Type ke neeche ✨ Features ki "
-                + "list hai — jitne chaaho tick karke ek saath laga sakte ho: "
-                + "Full Screen, Page Dark Mode aur Custom JS/CSS teeno type par "
-                + "chalte hain; Ad Block, Browse History aur Swipe Gestures "
-                + "sirf URL apps par; 3D JS Library sirf HTML apps par. Jo "
-                + "feature kisi type par nahi chalta, woh apne aap band ho "
-                + "jata hai.");
+                + "App (website ke URL se app). v6.0 se FEATURES builder me "
+                + "tick NAHI hote — Night Mode, Full Screen, Ad Block, "
+                + "Gestures, BG Play, PiP, Desktop Mode, History — ye sab "
+                + "har generated app ke ANDAR chhupe hue chhote '•' dot "
+                + "(top-right kone) ko dabane par khulne wale Control Panel "
+                + "se LIVE on/off hote hain, aur app ki apni memory me save "
+                + "rehte hain. Builder me ab sirf Type, 📚 Libraries aur "
+                + "📜 Scripts (default-ON) chune jate hain.");
         helpQa(col, "Q4. Files kahan save hoti hain? App ke andar kuch kyun nahi?",
                 "v5.1 ki policy: builder app apne andar kuch save NAHI karta. Har "
                 + "app ki files Downloads/SP WEB OS/<AppName>/ folder me milti "
                 + "hain — <AppName>.apk, <AppName>.html aur icon.png. Builder "
                 + "uninstall ho jaye to bhi files tumhare paas rehti hain.");
         helpQa(col, "Q5. Auto Save toggles kya karte hain?",
-                "Settings ke teen toggles — Auto Save HTMLs / Apks / Icons — tay "
-                + "karte hain har build ke baad Downloads me kya-kya save ho. "
-                + "Teeno default ON hain. Koi OFF ho to woh file save nahi hogi "
-                + "(APK phir bhi banta hai, Install bhi hota hai).");
+                "Settings ke chaar toggles — Auto Save HTMLs / Apks / Icons / "
+                + "Scripts — tay karte hain Downloads me kya-kya save ho. "
+                + "Chaaron default ON hain. Koi OFF ho to woh file Downloads "
+                + "me save nahi hogi (APK phir bhi banta hai, Install bhi "
+                + "hota hai; scripts ki in-app copy hamesha banti hai).");
         helpQa(col, "Q6. Ek saath kai files (jaise gaane) select nahi ho rahe?",
                 "Ye Android file picker ka tareeka hai: pehli file par LONG-PRESS "
                 + "karo, phir baaki files tap karke select karo. SP WEB OS ke apps "
@@ -782,27 +832,57 @@ public class MainActivity extends Activity {
         helpQa(col, "Q11. 🧩 Extensions (Custom JS/CSS) kya hai?",
                 "Sach ye hai: asli browser extensions (Chrome wale) WebView "
                 + "apps ke andar NAHI chal sakte — ye Android ki seema hai. "
-                + "Uska built-in badla hai Custom JS/CSS feature: '🧩 Custom "
-                + "JS/CSS' tick karo, JS box me apna JavaScript aur CSS box me "
-                + "apni styling paste karo — woh code har page load ke baad "
-                + "page ke andar chalega. Isse page ka rang-roop badalna, "
-                + "buttons chhupana, chhoti automation — bahut kuch ho sakta "
-                + "hai. Code naa aata ho to AI ko likhne ko kaho aur yahan "
-                + "paste kar do.");
+                + "Uske do built-in badle hain: (1) 📜 Preset Scripts — 12 "
+                + "taiyaar scripts (YouTube Ad Skip, Reader Mode, Speed "
+                + "Control…) jo har app ke andar • panel se on/off hote "
+                + "hain; (2) ✍️ Apna code — Home ke '📜 Scripts चुनो' page "
+                + "ke neeche JS/CSS boxes me apna code paste karo; woh "
+                + "assets/inject.js bankar har page load ke baad chalega. "
+                + "Code naa aata ho to AI ko likhne ko kaho aur yahan paste "
+                + "kar do.");
         helpQa(col, "Q12. 🚫 Ad Block kaise kaam karta hai?",
-                "URL apps me Ad Block ON ho to mashhoor ad/tracker networks "
-                + "(jaise DoubleClick, PopAds, Taboola, Adsterra…) ki requests "
-                + "rok di jati hain — page saaf, halka aur tez banta hai. "
-                + "Note: kabhi-kabhi koi site ad-network par hi nirbhar hoti "
-                + "hai aur ajeeb behave kar sakti hai — aisa ho to us app ko "
-                + "bina Ad Block ke dobara banao.");
-        helpQa(col, "Q13. 🎮 3D JS Library ka istemaal kaise karoon?",
-                "📄 HTML App chuno aur '🎮 3D JS Library' feature ON karo — "
-                + "three.min.js (Three.js) app ke andar pehle se jud jayega. "
-                + "Apni HTML file me bas itni line likho: "
-                + "<script src=\"three.min.js\"></script> — phir THREE wala "
-                + "poora code chalega, bina kuch alag se download kiye, "
-                + "offline bhi.");
+                "URL apps me panel ka Ad Block ON ho to mashhoor ad/tracker "
+                + "networks (jaise DoubleClick, PopAds, Taboola, Adsterra…) "
+                + "ki requests rok di jati hain — page saaf, halka aur tez "
+                + "banta hai. Blocked requests ko khaali-but-valid jawab "
+                + "milta hai aur video ki asal stream (googlevideo) kabhi "
+                + "nahi roki jati, isliye player atakta nahi. Kabhi koi site "
+                + "ajeeb behave kare to usi app ke panel se Ad Block OFF "
+                + "kar do — dobara APK banane ki zaroorat nahi.");
+        helpQa(col, "Q13. 📚 Libraries (Three.js / Chart.js / KaTeX) ka istemaal kaise karoon?",
+                "📄 HTML App chuno aur Home ke '📚 Libraries' row se library "
+                + "tick karo — woh file APK ke andar jud jayegi. HTML me bas "
+                + "relative path se jodo: Three.js ke liye "
+                + "<script src=\"three.min.js\"></script>, Chart.js ke liye "
+                + "<script src=\"chart.min.js\"></script>, KaTeX ke liye "
+                + "<link rel=\"stylesheet\" href=\"lib/katex/katex.min.css\"> "
+                + "aur <script src=\"lib/katex/katex.min.js\"></script>. Phir "
+                + "poora code chalega — bina kuch download kiye, offline bhi. "
+                + "Dhyaan do: libraries hi APK ka size badhati hain (Three.js "
+                + "~654 KB, Chart.js ~201 KB, KaTeX ~546 KB) — jo zaroori ho "
+                + "wahi chuno. URL apps me libraries nahi judti.");
+
+        helpQa(col, "Q14. 📜 Scripts system kya hai — presets, save, default-ON?",
+                "Har generated app ke andar 12 preset scripts pehle se hote "
+                + "hain (assets/scripts.json) — app ke • panel ki '📜 Scripts' "
+                + "list se kitne bhi ek saath ON kar sakte ho. Builder me: "
+                + "Home ke '📜 Scripts चुनो' page se jo tick karoge woh naye "
+                + "app me pehle din se ON rahenge. Apna code wahan script "
+                + "banakar save bhi kar sakte ho — woh builder ke andar "
+                + "hamesha save rehta hai, aur Settings ka 'Auto Save "
+                + "Scripts' ON ho to Downloads/SP WEB OS/Scripts/ me .js/"
+                + ".css copy bhi banti hai. 📜 Scripts tab se apne scripts "
+                + "Use/Delete kar sakte ho. Generated app ke andar bhi "
+                + "panel ki '💾 Script जोड़ो' se naya script ban sakta hai "
+                + "— woh sirf usi app me rehta hai.");
+        helpQa(col, "Q15. Panel me kuch buttons dhundhle (dim) kyun hain?",
+                "Dim matlab: woh cheez is app ke TYPE par lagu nahi hoti. "
+                + "HTML apps me History, Ad Block, Gestures aur Desktop Mode "
+                + "ka koi matlab nahi (koi website browse hi nahi hoti), "
+                + "isliye woh dim aur band dikhte hain — chhupaye nahi jate, "
+                + "taaki tumhe pata rahe kya-kya maujood hai. URL apps me "
+                + "sab kuch available hota hai. Yahi neeyam builder ke "
+                + "Libraries row par bhi hai (URL type par dim).");
 
         col.addView(heading("💡 Tips", 17), lp(18));
         col.addView(bodyText(
@@ -811,8 +891,8 @@ public class MainActivity extends Activity {
                 + "💡 Ek hi naam = update. Purani app par naya version chadh jata "
                 + "hai, data nahi udta.\n"
                 + "💡 Icon me saaf pattern aur tez rang sabse achha dikhta hai — purana design 'Saved Icons' se dobara bhi lag sakta hai.\n"
-                + "💡 Game ya 3D ke liye HTML App me '🎮 3D JS Library' feature "
-                + "ON karo — three.min.js alag se download karne ki zaroorat nahi.\n"
+                + "💡 Game/3D ke liye HTML App me 📚 Libraries se Three.js "
+                + "chuno — alag se download karne ki zaroorat nahi.\n"
                 + "💡 Badi HTML file ho to code paste ki jagah 'HTML File Chuno' "
                 + "istemaal karo — zyada reliable hai.\n"
                 + "💡 APK share karne se pehle ek baar khud install karke test "
@@ -1614,43 +1694,649 @@ public class MainActivity extends Activity {
         if (urlBox != null) {
             urlBox.setVisibility(url ? View.VISIBLE : View.GONE);
         }
-        setFeatureEnabled(cbAdBlock, url);
-        setFeatureEnabled(cbHistory, url);
-        setFeatureEnabled(cbGestures, url);
-        setFeatureEnabled(cb3d, !url);
+        refreshLibUi();
     }
 
-    private void setFeatureEnabled(CheckBox cb, boolean allowed) {
-        if (cb == null) return;
-        if (!allowed && cb.isChecked()) cb.setChecked(false); // listener pref bhi OFF kar dega
-        cb.setEnabled(allowed);
-        cb.setAlpha(allowed ? 1f : 0.45f);
-    }
+    // ---------------------------------------------------- v6.0: libraries
 
-    /** Ek feature checkbox banata hai — saved state ke saath; toggle
-     *  hote hi preference me save ho jata hai. */
-    private CheckBox featureCheck(final String prefKey, String label) {
-        final CheckBox cb = new CheckBox(this);
-        cb.setText(label);
-        cb.setTextSize(14.5f);
-        cb.setTextColor(DARK_TEXT);
-        cb.setButtonTintList(android.content.res.ColorStateList.valueOf(PINK));
-        cb.setChecked(getSharedPreferences(PREFS_NAME, MODE_PRIVATE)
-                .getBoolean(prefKey, false));
-        cb.setOnCheckedChangeListener((btn, checked) -> {
-            getSharedPreferences(PREFS_NAME, MODE_PRIVATE).edit()
-                    .putBoolean(prefKey, checked).apply();
-            if (btn == cbCustomCode) updateCustomCodeVisibility();
-        });
-        return cb;
-    }
-
-    /** Custom JS/CSS tick ho to hi JS/CSS wale boxes dikhte hain. */
-    private void updateCustomCodeVisibility() {
-        if (customCodeBox != null) {
-            customCodeBox.setVisibility(cbCustomCode != null && cbCustomCode.isChecked()
-                    ? View.VISIBLE : View.GONE);
+    /** Library chips ki haalat: chuni hui = pink bhari; URL type par
+     *  poori row dhundli + band (libraries sirf HTML apps ke liye —
+     *  brief ki dimmed-availability policy builder me bhi waisi hi). */
+    private void refreshLibUi() {
+        boolean url = "url".equals(appType);
+        if (libBtns != null) {
+            String[] sizes = {"~654 KB", "~201 KB", "~546 KB"};
+            String[] names = {"🎮 Three.js", "📊 Chart.js", "∑ KaTeX"};
+            for (int i = 0; i < libBtns.length; i++) {
+                boolean sel = libSel[i];
+                libBtns[i].setText(names[i] + (sel ? " ✓" : "") + "\n" + sizes[i]);
+                libBtns[i].setBackground(roundedBg(sel ? PINK : CARD_BG, 10, sel ? 0 : BORDER));
+                libBtns[i].setTextColor(sel ? 0xFFFFFFFF : DARK_TEXT);
+                libBtns[i].setTypeface(null, sel ? Typeface.BOLD : Typeface.NORMAL);
+                libBtns[i].setEnabled(!url);
+            }
         }
+        if (libRow != null) libRow.setAlpha(url ? 0.4f : 1f);
+        if (libNote != null) {
+            libNote.setText(url
+                    ? "Libraries सिर्फ़ HTML apps के लिए — URL app me ye band (dim) rehti hain."
+                    : "Chuni hui libraries APK ke andar jud jayengi — size utna hi badhega.");
+        }
+    }
+
+    // --------------------------------------- v6.0: script selection (prefs)
+
+    private Set<String> loadSelectedScriptIds() {
+        Set<String> out = new LinkedHashSet<>();
+        try {
+            JSONArray arr = new JSONArray(getSharedPreferences(PREFS_NAME, MODE_PRIVATE)
+                    .getString(PREF_SEL_SCRIPTS, "[]"));
+            for (int i = 0; i < arr.length(); i++) {
+                String id = arr.optString(i);
+                if (!id.isEmpty()) out.add(id);
+            }
+        } catch (Exception ignored) { }
+        return out;
+    }
+
+    private void saveSelectedScriptIds(Set<String> ids) {
+        try {
+            getSharedPreferences(PREFS_NAME, MODE_PRIVATE).edit()
+                    .putString(PREF_SEL_SCRIPTS,
+                            new JSONArray(new ArrayList<>(ids)).toString())
+                    .apply();
+        } catch (Exception ignored) { }
+    }
+
+    private void refreshScriptsBtn() {
+        if (scriptsBtn != null) {
+            scriptsBtn.setText("📜 Scripts चुनो (" + loadSelectedScriptIds().size() + " चुने)");
+        }
+    }
+
+    // -------------------------------------- v6.0: preset scripts (assets)
+
+    private JSONArray presetsCacheB;
+
+    /** Builder ke apne assets/scripts.json (template wali hi file —
+     *  byte-identical) se preset list. */
+    private JSONArray loadPresets() {
+        if (presetsCacheB != null) return presetsCacheB;
+        presetsCacheB = new JSONArray();
+        try {
+            byte[] b = readAssetBytes("scripts.json");
+            if (b != null) {
+                JSONArray arr = new JSONObject(new String(b, StandardCharsets.UTF_8))
+                        .optJSONArray("scripts");
+                if (arr != null) presetsCacheB = arr;
+            }
+        } catch (Exception ignored) { }
+        return presetsCacheB;
+    }
+
+    private JSONObject findPreset(String id) {
+        JSONArray arr = loadPresets();
+        for (int i = 0; i < arr.length(); i++) {
+            JSONObject p = arr.optJSONObject(i);
+            if (p != null && id.equals(p.optString("id"))) return p;
+        }
+        return null;
+    }
+
+    // --------------------------------- v6.0: user script store (in-app)
+
+    private File scriptsDir() {
+        File d = new File(getFilesDir(), "scripts");
+        //noinspection ResultOfMethodCallIgnored
+        d.mkdirs();
+        return d;
+    }
+
+    /** File-naam ke liye surakshit roop — HTMLs tab wale sanitize
+     *  pattern par (akshar/ank/_/- hi bachte hain). */
+    private static String scriptFileBase(String title) {
+        String base = title.trim().replaceAll("[^A-Za-z0-9 _\\-]", "").trim()
+                .replaceAll("\\s+", "_");
+        return base.isEmpty() ? "Script" : base;
+    }
+
+    /** User scripts ki list: filesDir/scripts/*.json (primary) +
+     *  Downloads/SP WEB OS/Scripts/*.js (mirror) — title se dedupe,
+     *  in-app wali copy jeetti hai. Har item: {id,title,js,css}. */
+    private List<JSONObject> loadUserScripts() {
+        List<JSONObject> out = new ArrayList<>();
+        Set<String> seen = new HashSet<>();
+        File[] files = scriptsDir().listFiles((d, n) -> n.endsWith(".json"));
+        if (files != null) {
+            Arrays.sort(files);
+            for (File f : files) {
+                try {
+                    String text = new String(readFileBytes(f), StandardCharsets.UTF_8);
+                    JSONObject o = new JSONObject(text);
+                    String title = o.optString("title").trim();
+                    if (title.isEmpty()) continue;
+                    JSONObject u = new JSONObject();
+                    u.put("id", "user:" + scriptFileBase(title));
+                    u.put("title", title);
+                    u.put("js", o.optString("js"));
+                    u.put("css", o.optString("css"));
+                    out.add(u);
+                    seen.add(title.toLowerCase(Locale.ROOT));
+                } catch (Exception ignored) { }
+            }
+        }
+        for (File f : listDownloadsScriptFiles()) {
+            String name = f.getName();
+            String title = name.substring(0, name.length() - 3).replace('_', ' ');
+            if (seen.contains(title.toLowerCase(Locale.ROOT))) continue;
+            try {
+                JSONObject u = new JSONObject();
+                u.put("id", "user:" + scriptFileBase(title));
+                u.put("title", title);
+                u.put("js", new String(readFileBytes(f), StandardCharsets.UTF_8));
+                File cssF = new File(f.getParentFile(),
+                        name.substring(0, name.length() - 3) + ".css");
+                u.put("css", cssF.exists()
+                        ? new String(readFileBytes(cssF), StandardCharsets.UTF_8) : "");
+                out.add(u);
+                seen.add(title.toLowerCase(Locale.ROOT));
+            } catch (Exception ignored) { }
+        }
+        return out;
+    }
+
+    /** Downloads/SP WEB OS/Scripts/ ke .js files (API 29+ par
+     *  MediaStore query, neeche direct file) — HTMLs tab wale pattern
+     *  par. Downloads wali asal reading MediaStore URI se hoti hai;
+     *  ye helper seedha path try karta hai (file wahi milti hai jahan
+     *  humne likhi thi — public Downloads har app ko path se dikhta
+     *  hai jab storage permission/access ho; na mile to list khaali). */
+    private List<File> listDownloadsScriptFiles() {
+        List<File> out = new ArrayList<>();
+        try {
+            File dir = new File(Environment.getExternalStoragePublicDirectory(
+                    Environment.DIRECTORY_DOWNLOADS), "SP WEB OS/Scripts");
+            File[] files = dir.listFiles((d, n) -> n.endsWith(".js"));
+            if (files != null) {
+                Arrays.sort(files);
+                out.addAll(Arrays.asList(files));
+            }
+        } catch (Exception ignored) { }
+        return out;
+    }
+
+    private byte[] readFileBytes(File f) throws Exception {
+        try (InputStream in = new FileInputStream(f)) {
+            ByteArrayOutputStream baos = new ByteArrayOutputStream();
+            byte[] buf = new byte[8192];
+            int n;
+            while ((n = in.read(buf)) != -1) baos.write(buf, 0, n);
+            return baos.toByteArray();
+        }
+    }
+
+    private JSONObject findUserScriptB(String id) {
+        for (JSONObject u : loadUserScripts()) {
+            if (id.equals(u.optString("id"))) return u;
+        }
+        return null;
+    }
+
+    /** User script save: in-app copy HAMESHA; "Auto Save Scripts" ON
+     *  ho to Downloads/SP WEB OS/Scripts/<Title>.js (+ .css) mirror bhi. */
+    private void saveUserScript(String title, String js, String css) throws Exception {
+        JSONObject o = new JSONObject();
+        o.put("title", title);
+        o.put("js", js == null ? "" : js);
+        o.put("css", css == null ? "" : css);
+        o.put("updatedAt", System.currentTimeMillis());
+        File f = new File(scriptsDir(), scriptFileBase(title) + ".json");
+        try (FileOutputStream out = new FileOutputStream(f)) {
+            out.write(o.toString(2).getBytes(StandardCharsets.UTF_8));
+        }
+        boolean mirror = getSharedPreferences(PREFS_NAME, MODE_PRIVATE)
+                .getBoolean(PREF_AUTO_SAVE_SCRIPTS, true);
+        if (mirror) {
+            writeToDownloads("Scripts", scriptFileBase(title) + ".js",
+                    "text/javascript",
+                    (js == null ? "" : js).getBytes(StandardCharsets.UTF_8), null);
+            if (css != null && !css.trim().isEmpty()) {
+                writeToDownloads("Scripts", scriptFileBase(title) + ".css",
+                        "text/css", css.getBytes(StandardCharsets.UTF_8), null);
+            }
+        }
+    }
+
+    /** User script delete: in-app copy pakki delete; Downloads copy
+     *  best-effort (MediaStore consent/system delete pattern humare
+     *  paas APK delete jaisa maujood nahi, isliye sirf direct-path try). */
+    private void deleteUserScript(JSONObject u) {
+        String base = scriptFileBase(u.optString("title"));
+        try { new File(scriptsDir(), base + ".json").delete(); } catch (Exception ignored) { }
+        try {
+            File dir = new File(Environment.getExternalStoragePublicDirectory(
+                    Environment.DIRECTORY_DOWNLOADS), "SP WEB OS/Scripts");
+            new File(dir, base + ".js").delete();
+            new File(dir, base + ".css").delete();
+        } catch (Exception ignored) { }
+        Set<String> sel = loadSelectedScriptIds();
+        if (sel.remove(u.optString("id"))) saveSelectedScriptIds(sel);
+        refreshScriptsBtn();
+    }
+
+    // --------------------------- v6.0: full-screen overlay pages (generic)
+
+    /** contentFrame par ek full-screen scrollable page kholta hai
+     *  (v5.3.1 Icon Maker pattern, aam banaya hua). Header me title +
+     *  ⬅ वापस; wapas dabane par onClose (agar diya ho) chalta hai. */
+    private LinearLayout openPage(String title, final Runnable onClose) {
+        closeOverlayPage();
+        LinearLayout page = new LinearLayout(this);
+        page.setOrientation(LinearLayout.VERTICAL);
+        page.setBackgroundColor(PAGE_BG);
+
+        LinearLayout header = new LinearLayout(this);
+        header.setOrientation(LinearLayout.HORIZONTAL);
+        header.setGravity(Gravity.CENTER_VERTICAL);
+        header.setBackgroundColor(CARD_BG);
+        header.setPadding(dp(8), dp(8), dp(14), dp(8));
+        Button back = new Button(this);
+        back.setText("⬅ वापस");
+        styleSmall(back);
+        back.setOnClickListener(v -> closeOverlayPage());
+        header.addView(back);
+        TextView t = new TextView(this);
+        t.setText(title);
+        t.setTextSize(16.5f);
+        t.setTextColor(DARK_TEXT);
+        t.setTypeface(null, Typeface.BOLD);
+        t.setPadding(dp(12), 0, 0, 0);
+        header.addView(t);
+        page.addView(header);
+        View div = new View(this);
+        div.setBackgroundColor(BORDER);
+        page.addView(div, new LinearLayout.LayoutParams(
+                LinearLayout.LayoutParams.MATCH_PARENT, dp(1)));
+
+        ScrollView scroll = new ScrollView(this);
+        LinearLayout col = tabColumn();
+        scroll.addView(col);
+        page.addView(scroll, new LinearLayout.LayoutParams(
+                LinearLayout.LayoutParams.MATCH_PARENT, 0, 1f));
+
+        contentFrame.addView(page, new FrameLayout.LayoutParams(
+                FrameLayout.LayoutParams.MATCH_PARENT,
+                FrameLayout.LayoutParams.MATCH_PARENT));
+        overlayPage = page;
+        page.setTag(onClose);
+        return col;
+    }
+
+    private void closeOverlayPage() {
+        if (overlayPage == null) return;
+        View page = overlayPage;
+        overlayPage = null;
+        Object tag = page.getTag();
+        contentFrame.removeView(page);
+        if (tag instanceof Runnable) {
+            try { ((Runnable) tag).run(); } catch (Exception ignored) { }
+        }
+    }
+
+    // -------------------------------------- v6.0: scripts picker page
+
+    /** "📜 Scripts चुनो" page: presets + user scripts ke checkboxes
+     *  (multi-select, prefs me turant save), neeche manual JS/CSS
+     *  boxes + "script banakar save" button. */
+    private void openScriptsPicker() {
+        // Manual boxes ke purane text ko pehle prefs se bharo (page
+        // band hone par wapas save hota hai — closeOverlayPage ka
+        // onClose hook).
+        SharedPreferences prefs = getSharedPreferences(PREFS_NAME, MODE_PRIVATE);
+        final String oldJs = prefs.getString(PREF_MANUAL_JS, "");
+        final String oldCss = prefs.getString(PREF_MANUAL_CSS, "");
+        LinearLayout col = openPage("📜 Scripts चुनो", () -> {
+            if (pageJsBox != null && pageCssBox != null) {
+                getSharedPreferences(PREFS_NAME, MODE_PRIVATE).edit()
+                        .putString(PREF_MANUAL_JS, pageJsBox.getText().toString())
+                        .putString(PREF_MANUAL_CSS, pageCssBox.getText().toString())
+                        .apply();
+            }
+            pageJsBox = null;
+            pageCssBox = null;
+            refreshScriptsBtn();
+        });
+        col.addView(bodyText("Jo scripts yahan tick karoge, woh naye app me "
+                + "PEHLE DIN SE ON rahenge. Baad me app ke andar • panel se "
+                + "kabhi bhi on/off ho jayenge — dobara APK banane ki "
+                + "zaroorat nahi. Power scripts (📺 BG Play, 🖼️ PiP) asal "
+                + "me native switch hain — woh bhi yahi se default-ON ho "
+                + "sakti hain."));
+        final Set<String> sel = loadSelectedScriptIds();
+
+        col.addView(heading("⭐ Preset scripts", 15), lp(12));
+        JSONArray presets = loadPresets();
+        for (int i = 0; i < presets.length(); i++) {
+            JSONObject p = presets.optJSONObject(i);
+            if (p == null) continue;
+            col.addView(scriptCheckRow(sel, p.optString("id"),
+                    p.optString("title"), p.optString("desc")), lp(4));
+        }
+
+        List<JSONObject> users = loadUserScripts();
+        if (!users.isEmpty()) {
+            col.addView(heading("💾 Mere save kiye scripts", 15), lp(14));
+            for (JSONObject u : users) {
+                col.addView(scriptCheckRow(sel, u.optString("id"),
+                        u.optString("title"), "Mera banaya hua script"), lp(4));
+            }
+        }
+
+        col.addView(heading("✍️ अपना code (optional)", 15), lp(16));
+        col.addView(bodyText("Ye code hamesha ON rehta hai (assets/inject.js "
+                + "bankar) — panel scripts se alag. Pehle jaisa hi v5.3 "
+                + "wala Custom JS/CSS."));
+        pageJsBox = new EditText(this);
+        pageJsBox.setHint("JS code (optional) — har page load ke baad chalega");
+        pageJsBox.setMinLines(4);
+        pageJsBox.setGravity(Gravity.TOP);
+        pageJsBox.setTextSize(12);
+        pageJsBox.setText(oldJs);
+        styleField(pageJsBox);
+        col.addView(pageJsBox, lp(6));
+        pageCssBox = new EditText(this);
+        pageCssBox.setHint("CSS code (optional) — page ki styling badlega");
+        pageCssBox.setMinLines(4);
+        pageCssBox.setGravity(Gravity.TOP);
+        pageCssBox.setTextSize(12);
+        pageCssBox.setText(oldCss);
+        styleField(pageCssBox);
+        col.addView(pageCssBox, lp(6));
+
+        Button saveAs = new Button(this);
+        saveAs.setText("💾 ये code script बनाकर save करो");
+        styleOutline(saveAs);
+        saveAs.setOnClickListener(v -> {
+            final String js = pageJsBox.getText().toString();
+            final String css = pageCssBox.getText().toString();
+            if (js.trim().isEmpty() && css.trim().isEmpty()) {
+                Toast.makeText(this, "Pehle JS ya CSS box me kuch code likho",
+                        Toast.LENGTH_LONG).show();
+                return;
+            }
+            final EditText titleIn = new EditText(this);
+            titleIn.setHint("Script ka naam — jaise 'Mera YouTube Fix'");
+            titleIn.setSingleLine(true);
+            new AlertDialog.Builder(this)
+                    .setTitle("💾 Script save करो")
+                    .setView(titleIn)
+                    .setPositiveButton("Save", (d, w) -> {
+                        String title = titleIn.getText().toString().trim();
+                        if (title.isEmpty()) {
+                            Toast.makeText(this, "Naam khaali hai — script save nahi hua",
+                                    Toast.LENGTH_LONG).show();
+                            return;
+                        }
+                        try {
+                            saveUserScript(title, js, css);
+                            Toast.makeText(this, "💾 Script save ho gaya: " + title,
+                                    Toast.LENGTH_SHORT).show();
+                            openScriptsPicker(); // list refresh
+                        } catch (Exception e) {
+                            Toast.makeText(this, "❌ Save nahi hua: " + e.getMessage(),
+                                    Toast.LENGTH_LONG).show();
+                        }
+                    })
+                    .setNegativeButton("Cancel", null)
+                    .show();
+        });
+        col.addView(saveAs, lp(8));
+    }
+
+    /** Picker page ki ek checkbox row (toggle -> prefs me turant save). */
+    private View scriptCheckRow(final Set<String> sel, final String id,
+                                String title, String desc) {
+        LinearLayout row = new LinearLayout(this);
+        row.setOrientation(LinearLayout.HORIZONTAL);
+        row.setGravity(Gravity.CENTER_VERTICAL);
+        row.setBackground(roundedBg(CARD_BG, 10, BORDER));
+        row.setPadding(dp(10), dp(6), dp(6), dp(6));
+        LinearLayout texts = new LinearLayout(this);
+        texts.setOrientation(LinearLayout.VERTICAL);
+        TextView t = new TextView(this);
+        t.setText(title);
+        t.setTextSize(13.5f);
+        t.setTextColor(DARK_TEXT);
+        t.setTypeface(null, Typeface.BOLD);
+        texts.addView(t);
+        TextView d = new TextView(this);
+        d.setText(desc == null ? "" : desc);
+        d.setTextSize(11.5f);
+        d.setTextColor(GREY_TEXT);
+        texts.addView(d);
+        row.addView(texts, new LinearLayout.LayoutParams(0,
+                LinearLayout.LayoutParams.WRAP_CONTENT, 1f));
+        CheckBox cb = new CheckBox(this);
+        cb.setButtonTintList(android.content.res.ColorStateList.valueOf(PINK));
+        cb.setChecked(sel.contains(id));
+        cb.setOnCheckedChangeListener((btn, checked) -> {
+            if (checked) sel.add(id); else sel.remove(id);
+            saveSelectedScriptIds(sel);
+        });
+        row.addView(cb);
+        return row;
+    }
+
+    // ------------------------------------------- v6.0: Scripts tab
+
+    /** 5th tab "📜 Scripts" ka khaali khaana — asal list
+     *  refreshScriptsTab() bharta hai (tab khulte hi taza). */
+    private LinearLayout buildScriptsTab() {
+        LinearLayout root = tabColumn();
+        root.addView(heading("📜 Scripts Library", 20));
+        root.addView(bodyText("⭐ Preset scripts (12) har generated app ke "
+                + "andar pehle se hote hain. 💾 User scripts yahan se manage "
+                + "karo — naye app me default-ON karne ke liye Home ke "
+                + "'📜 Scripts चुनो' page se tick karo."));
+        scriptsTabList = new LinearLayout(this);
+        scriptsTabList.setOrientation(LinearLayout.VERTICAL);
+        root.addView(scriptsTabList, lp(8));
+        return root;
+    }
+
+    private void refreshScriptsTab() {
+        if (scriptsTabList == null) return;
+        scriptsTabList.removeAllViews();
+        scriptsTabList.addView(heading("⭐ Preset scripts (view only)", 15), lp(4));
+        JSONArray presets = loadPresets();
+        for (int i = 0; i < presets.length(); i++) {
+            JSONObject p = presets.optJSONObject(i);
+            if (p == null) continue;
+            scriptsTabList.addView(scriptInfoRow(
+                    p.optString("title"),
+                    p.optString("desc") + "  •  " + worksOnLabel(p.optString("worksOn"))),
+                    lp(4));
+        }
+        scriptsTabList.addView(heading("💾 Mere scripts", 15), lp(14));
+        List<JSONObject> users = loadUserScripts();
+        if (users.isEmpty()) {
+            scriptsTabList.addView(bodyText("Abhi koi user script nahi hai. "
+                    + "Home → '📜 Scripts चुनो' → apna code likhkar "
+                    + "'💾 ये code script बनाकर save करो' dabao."), lp(4));
+        }
+        for (final JSONObject u : users) {
+            scriptsTabList.addView(userScriptRow(u), lp(4));
+        }
+    }
+
+    private static String worksOnLabel(String w) {
+        if ("youtube".equals(w)) return "YouTube par";
+        if ("sites".equals(w)) return "websites par";
+        return "sab jagah";
+    }
+
+    private View scriptInfoRow(String title, String desc) {
+        LinearLayout row = new LinearLayout(this);
+        row.setOrientation(LinearLayout.VERTICAL);
+        row.setBackground(roundedBg(CARD_BG, 10, BORDER));
+        row.setPadding(dp(12), dp(9), dp(12), dp(9));
+        TextView t = new TextView(this);
+        t.setText(title);
+        t.setTextSize(13.5f);
+        t.setTextColor(DARK_TEXT);
+        t.setTypeface(null, Typeface.BOLD);
+        row.addView(t);
+        TextView d = new TextView(this);
+        d.setText(desc);
+        d.setTextSize(11.5f);
+        d.setTextColor(GREY_TEXT);
+        row.addView(d);
+        return row;
+    }
+
+    private View userScriptRow(final JSONObject u) {
+        LinearLayout row = new LinearLayout(this);
+        row.setOrientation(LinearLayout.VERTICAL);
+        row.setBackground(roundedBg(CARD_BG, 10, BORDER));
+        row.setPadding(dp(12), dp(9), dp(12), dp(9));
+        TextView t = new TextView(this);
+        t.setText(u.optString("title"));
+        t.setTextSize(13.5f);
+        t.setTextColor(DARK_TEXT);
+        t.setTypeface(null, Typeface.BOLD);
+        row.addView(t);
+        LinearLayout btns = new LinearLayout(this);
+        btns.setOrientation(LinearLayout.HORIZONTAL);
+        Button use = new Button(this);
+        use.setText("✅ Use करो");
+        styleSmall(use);
+        use.setOnClickListener(v -> {
+            Set<String> sel = loadSelectedScriptIds();
+            sel.add(u.optString("id"));
+            saveSelectedScriptIds(sel);
+            refreshScriptsBtn();
+            Toast.makeText(this, "✅ '" + u.optString("title")
+                    + "' agle build ke liye chun liya — Home par jao", Toast.LENGTH_LONG).show();
+            showTab(TAB_HOME);
+        });
+        btns.addView(use);
+        Button del = new Button(this);
+        del.setText("🗑 Delete");
+        styleSmall(del);
+        del.setTextColor(RED);
+        LinearLayout.LayoutParams dp2 = new LinearLayout.LayoutParams(
+                LinearLayout.LayoutParams.WRAP_CONTENT,
+                LinearLayout.LayoutParams.WRAP_CONTENT);
+        dp2.leftMargin = dp(8);
+        del.setOnClickListener(v -> new AlertDialog.Builder(this)
+                .setTitle("Script delete करूं?")
+                .setMessage("'" + u.optString("title") + "' hamesha ke liye "
+                        + "delete ho jayega (in-app copy; Downloads copy "
+                        + "best-effort).")
+                .setPositiveButton("Delete", (d, w) -> {
+                    deleteUserScript(u);
+                    refreshScriptsTab();
+                })
+                .setNegativeButton("Cancel", null)
+                .show());
+        btns.addView(del, dp2);
+        row.addView(btns, lp(6));
+        return row;
+    }
+
+    // --------------------------------- v6.0: All Features List page
+
+    /** Settings ka "📋 All Features List" — poori sachchai ek page
+     *  par: builder ki shaaqtiyaan, build-time chunav (asli sizes ke
+     *  saath), generated app ke panel ki poori soochi + availability
+     *  matrix, preset scripts, native bridge, aur imaandaar seemayein. */
+    private void openFeaturesList() {
+        LinearLayout col = openPage("📋 All Features List", null);
+
+        col.addView(heading("1) 🛠️ Builder की शक्तियाँ", 16), lp(4));
+        col.addView(bodyText(
+                "• Single-file HTML → APK, phone par hi (koi PC/server nahi)\n"
+                + "• 📄 HTMLs / 📦 APKs / 📜 Scripts tabs — saari files "
+                + "Downloads/SP WEB OS/ me, app ke andar kuch save nahi "
+                + "(scripts ki in-app copy iska ek apvaad hai — woh "
+                + "library hai, output nahi)\n"
+                + "• 🎨 Icon Maker: apna design kiya icon (13 patterns) + "
+                + "Saved Icons picker\n"
+                + "• 🌙 Dark Mode, ❓ Help Center, Auto Save toggles "
+                + "(HTMLs / APKs / Icons / Scripts)"));
+
+        col.addView(heading("2) 🎛️ बनते समय चुनने वाली चीज़ें", 16), lp(16));
+        col.addView(bodyText(
+                "• App Type: 📄 HTML (apni file) ya 🌐 URL (koi website)\n"
+                + "• 📚 Libraries — SIRF HTML apps ke liye, aur sirf yahi "
+                + "cheez APK ka size sach me badhati hai:\n"
+                + "    🎮 Three.js (three.min.js) — ~654 KB — HTML me: "
+                + "<script src=\"three.min.js\"></script>\n"
+                + "    📊 Chart.js (chart.min.js) — ~201 KB — HTML me: "
+                + "<script src=\"chart.min.js\"></script>\n"
+                + "    ∑ KaTeX (lib/katex/) — ~546 KB — HTML me: "
+                + "<link rel=\"stylesheet\" href=\"lib/katex/katex.min.css\"> "
+                + "+ <script src=\"lib/katex/katex.min.js\"></script>\n"
+                + "• 📜 Scripts default-ON chunav — chune hue scripts naye "
+                + "app me pehle din se ON; baad me app ke panel se badal "
+                + "sakte ho\n"
+                + "• ✍️ अपना code (manual JS/CSS) — assets/inject.js bankar "
+                + "hamesha ON rehta hai"));
+
+        col.addView(heading("3) 📱 हर generated app के अंदर — secret • panel", 16), lp(16));
+        col.addView(bodyText(
+                "App ke top-right kone me chhupa chhota sa '•' dot dabane "
+                + "par Control Panel khulta hai. Sab kuch LIVE badalta "
+                + "hai aur app ki apni memory me save rehta hai:\n"
+                + "🌙 Night Mode (page ulta-rang/dark) — URL ✓ HTML ✓\n"
+                + "⛶ Full Screen — URL ✓ HTML ✓\n"
+                + "📺 Background Play — URL ✓ HTML ✓\n"
+                + "🖼️ PiP Mode — URL ✓ HTML ✓\n"
+                + "🚫 Ad Block — URL ✓ HTML ✗ (dim)\n"
+                + "👆 Swipe Gestures — URL ✓ HTML ✗ (dim)\n"
+                + "🖥️ Desktop Mode — URL ✓ HTML ✗ (dim)\n"
+                + "🤫 Browse History — URL ✓ HTML ✗ (dim)\n"
+                + "📜 Scripts (12 presets + apne) — URL ✓ HTML ✓\n"
+                + "💾 Script जोड़ो (app ke andar naya script) — URL ✓ HTML ✓\n"
+                + "Jo cheez kisi type par lagu nahi hoti woh panel me "
+                + "DHUNDLI (dim) dikhti hai — chhupati kabhi nahi."));
+
+        col.addView(heading("4) 📜 Preset scripts (12)", 16), lp(16));
+        JSONArray presets = loadPresets();
+        for (int i = 0; i < presets.length(); i++) {
+            JSONObject p = presets.optJSONObject(i);
+            if (p == null) continue;
+            col.addView(bodyText("• " + p.optString("title") + " — "
+                    + p.optString("desc") + " (" + worksOnLabel(p.optString("worksOn")) + ")"), lp(2));
+        }
+
+        col.addView(heading("5) 🔌 Generated app की native शक्तियाँ (SpWebOS bridge)", 16), lp(16));
+        col.addView(bodyText(
+                "• SpWebOS.notify(title, body) — turant notification\n"
+                + "• SpWebOS.scheduleNotify(seconds, title, body) — app "
+                + "band ho tab bhi time par reminder\n"
+                + "• SpWebOS.keepAlive(true/false) — app ko background me "
+                + "zinda rakhne wala service\n"
+                + "• SpWebOS.toast(text) — chhota sa message"));
+
+        col.addView(heading("6) ⚠️ सीमाएँ — ईमानदारी से", 16), lp(16));
+        col.addView(bodyText(
+                "• 📺 Background Play best-effort hai: WebView pause nahi "
+                + "hota + keep-alive service chalta hai, lekin OS/OEM "
+                + "battery manager bhaari dabav me app ko band kar sakta "
+                + "hai — ye Android ki seema hai.\n"
+                + "• 🖼️ PiP tabhi khulta hai jab video HTML5 fullscreen "
+                + "me chal raha ho (Home dabane par); har site PiP allow "
+                + "nahi karti.\n"
+                + "• ⬇️ Video Download script sirf DIRECT file wale "
+                + "video par kaam karta hai. YouTube jaise streaming "
+                + "(blob/DASH) video download nahi ho sakte — script "
+                + "wahan saaf bata deta hai.\n"
+                + "• 🧩 Asli browser extensions (Chrome wale) WebView me "
+                + "NAHI chal sakte. Uska badla: Custom JS/CSS + ye preset "
+                + "scripts.\n"
+                + "• 📚 Libraries ke alawa scripts/features bahut chhote "
+                + "hain — saare mila kar bhi app ~5 MB ke andar rehta hai."));
     }
 
     /** Bundled asset maujood hai ya nahi (template APKs ke liye). */
@@ -2419,26 +3105,24 @@ public class MainActivity extends Activity {
             return;
         }
 
-        // ---- Features (v5.3): checkbox states UI thread par hi padh
-        // lo. Type-gating yahan doosri parat ke roop me bhi hai
-        // (checkboxes waise hi disabled rehte hain).
-        final boolean fFullscreen = cbFullscreen.isChecked();
-        final boolean fDarkPage = cbDarkPage.isChecked();
-        final boolean fCustom = cbCustomCode.isChecked();
-        final boolean fAdBlock = isUrl && cbAdBlock.isChecked();
-        final boolean fHistory = isUrl && cbHistory.isChecked();
-        final boolean fGestures = isUrl && cbGestures.isChecked();
-        final boolean f3d = !isUrl && cb3d.isChecked();
-        final String jsCode = jsBox.getText().toString();
-        final String cssCode = cssBox.getText().toString();
+        // ---- v6.0 selections (UI thread par hi padh lo): libraries
+        // (URL par force-none), default-ON scripts, manual code.
+        // Features yahan NAHI padhe jate — woh app ke panel me hain.
+        SharedPreferences bprefs = getSharedPreferences(PREFS_NAME, MODE_PRIVATE);
+        final boolean libThree = !isUrl && libSel[0];
+        final boolean libChart = !isUrl && libSel[1];
+        final boolean libKatex = !isUrl && libSel[2];
+        final List<String> defScripts = new ArrayList<>(loadSelectedScriptIds());
+        final String jsCode = bprefs.getString(PREF_MANUAL_JS, "");
+        final String cssCode = bprefs.getString(PREF_MANUAL_CSS, "");
+        final boolean fCustom = jsCode != null && cssCode != null
+                && (!jsCode.trim().isEmpty() || !cssCode.trim().isEmpty());
         List<String> on = new ArrayList<>();
-        if (fFullscreen) on.add("Full Screen");
-        if (fDarkPage) on.add("Page Dark Mode");
-        if (fCustom) on.add("Custom JS/CSS");
-        if (fAdBlock) on.add("Ad Block");
-        if (fHistory) on.add("Browse History");
-        if (fGestures) on.add("Swipe Gestures");
-        if (f3d) on.add("3D JS Library");
+        if (libThree) on.add("Three.js");
+        if (libChart) on.add("Chart.js");
+        if (libKatex) on.add("KaTeX");
+        if (!defScripts.isEmpty()) on.add(defScripts.size() + " scripts default-ON");
+        if (fCustom) on.add("Apna code (inject.js)");
         final String featSummary = on.isEmpty() ? "koi nahi" : joinStrings(on);
 
         setStatus("APK ban raha hai... ⏳");
@@ -2447,17 +3131,32 @@ public class MainActivity extends Activity {
             try {
                 Map<String, byte[]> swaps = new HashMap<>();
 
-                // config.json — HAR build me jaata hai; template use
-                // padhkar type + saare feature flags tay karta hai.
+                // config.json (v6.0) — HAR build me jaata hai. Ab isme
+                // sirf type/url, inject.js ka switch, panel ke seed
+                // defaults (type ke hisaab se yahi par tay) aur
+                // default-ON script ids hain. Features app ke andar
+                // panel se LIVE badalte hain — config unhe bake nahi
+                // karta. (Template purane flat keys bhi samajhta hai,
+                // isliye v5.3 ke bane apps bhi sahi chalte hain.)
                 JSONObject cfg = new JSONObject();
                 cfg.put("type", isUrl ? "url" : "html");
                 if (isUrl) cfg.put("url", urlText);
-                cfg.put("fullscreen", fFullscreen);
-                cfg.put("adBlock", fAdBlock);
-                cfg.put("history", fHistory);
-                cfg.put("gestures", fGestures);
-                cfg.put("darkPage", fDarkPage);
                 cfg.put("customCode", fCustom);
+                JSONObject pd = new JSONObject();
+                pd.put("nightMode", false);
+                pd.put("fullScreen", false);
+                pd.put("bgPlay", defScripts.contains("bg-play"));
+                pd.put("pip", defScripts.contains("pip-mode"));
+                pd.put("adBlock", isUrl);
+                pd.put("gestures", isUrl);
+                pd.put("historyRec", isUrl);
+                pd.put("desktopMode", false);
+                cfg.put("panelDefaults", pd);
+                JSONArray ds = new JSONArray();
+                for (String id : defScripts) {
+                    if (!"bg-play".equals(id) && !"pip-mode".equals(id)) ds.put(id);
+                }
+                cfg.put("defaultScripts", ds);
                 swaps.put("assets/config.json",
                         cfg.toString().getBytes(StandardCharsets.UTF_8));
 
@@ -2466,16 +3165,52 @@ public class MainActivity extends Activity {
                 // hai — ye sirf placeholder/safety hai).
                 swaps.put("assets/index.html", isUrl ? redirectHtml(urlText) : html);
 
-                // 3D JS: builder ke apne assets wali three.min.js seedha
-                // generated app ke andar assets/three.min.js bankar.
-                if (f3d) {
+                // Libraries (v6.0): chuni hui library files builder ke
+                // apne assets se seedha generated app ke andar — sirf
+                // chune par hi (yahi APK ka size badhati hain).
+                if (libThree) {
                     byte[] three = readAssetBytes("three.min.js");
                     if (three == null || three.length < 100000) {
-                        setStatus("❌ 3D JS library (three.min.js) is build me nahi mili.\n"
+                        setStatus("❌ Three.js library (three.min.js) is build me nahi mili.\n"
                                 + "SP WEB OS ka latest version install karke phir try karo.");
                         return;
                     }
                     swaps.put("assets/three.min.js", three);
+                }
+                if (libChart) {
+                    byte[] chart = readAssetBytes("chart.min.js");
+                    if (chart == null || chart.length < 50000) {
+                        setStatus("❌ Chart.js library (chart.min.js) is build me nahi mili.\n"
+                                + "SP WEB OS ka latest version install karke phir try karo.");
+                        return;
+                    }
+                    swaps.put("assets/chart.min.js", chart);
+                }
+                if (libKatex) {
+                    // KaTeX best-effort library hai: builder build me
+                    // asset na bana ho to build nahi rokta — sirf
+                    // chetaavni ke saath aage badhta hai.
+                    String[] katexFiles = null;
+                    try { katexFiles = getAssets().list("lib/katex"); }
+                    catch (Exception ignored) { }
+                    boolean katexOk = false;
+                    if (katexFiles != null) {
+                        for (String fn : katexFiles) {
+                            if ("katex.min.js".equals(fn)) katexOk = true;
+                        }
+                    }
+                    if (!katexOk) {
+                        runOnUiThread(() -> Toast.makeText(this,
+                                "⚠️ KaTeX is build me uplabdh nahi — bina KaTeX ke APK ban raha hai",
+                                Toast.LENGTH_LONG).show());
+                    } else {
+                        List<String> all = new ArrayList<>();
+                        collectAssetPaths("lib/katex", all);
+                        for (String path : all) {
+                            byte[] b = readAssetBytes(path);
+                            if (b != null) swaps.put("assets/" + path, b);
+                        }
+                    }
                 }
 
                 // Custom JS/CSS: assets/inject.js (CSS ek <style> wale
@@ -2497,7 +3232,8 @@ public class MainActivity extends Activity {
                         isUrl ? redirectHtml(urlText) : html, builtApk, builtLabel);
                 setStatus("✅ APK taiyaar!\nApp: " + builtLabel + " (naam: " + nameSource + ")"
                         + "\nType: " + (isUrl ? "🌐 URL — " + urlText : "📄 HTML")
-                        + "\nFeatures: " + featSummary
+                        + "\nBuild choices: " + featSummary
+                        + "\n(Features app ke andar • panel se badlenge)"
                         + "\nPackage: " + builtPackage
                         + saved
                         + (iconBytes != null ? "\n🎨 Custom icon lagaya gaya." : "")
@@ -2508,6 +3244,22 @@ public class MainActivity extends Activity {
                         + "\n(Tip: agar naam diya tha, to naam khaali karke ek baar phir try karo — default mode hamesha chalta hai.)");
             }
         }).start();
+    }
+
+    /** Ek asset folder ke andar ki saari files (subfolders samet)
+     *  recursively ikatthi karta hai — KaTeX ke fonts ke liye. */
+    private void collectAssetPaths(String dir, List<String> out) {
+        try {
+            String[] kids = getAssets().list(dir);
+            if (kids == null) return;
+            for (String k : kids) {
+                String p = dir + "/" + k;
+                String[] sub = null;
+                try { sub = getAssets().list(p); } catch (Exception ignored) { }
+                if (sub != null && sub.length > 0) collectAssetPaths(p, out);
+                else out.add(p);
+            }
+        } catch (Exception ignored) { }
     }
 
     /** Builder ka koi asset poora padhta hai (three.min.js ke liye);
