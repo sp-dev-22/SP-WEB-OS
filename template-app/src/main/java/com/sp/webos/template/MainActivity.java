@@ -23,6 +23,8 @@ import android.webkit.JavascriptInterface;
 import android.webkit.PermissionRequest;
 import android.webkit.URLUtil;
 import android.webkit.ValueCallback;
+import android.webkit.WebResourceRequest;
+import android.webkit.WebResourceResponse;
 import android.webkit.WebChromeClient;
 import android.webkit.WebSettings;
 import android.webkit.WebView;
@@ -35,6 +37,7 @@ import android.widget.ListView;
 import android.widget.TextView;
 import android.widget.Toast;
 
+import java.io.ByteArrayInputStream;
 import java.io.ByteArrayOutputStream;
 import java.io.InputStream;
 import java.nio.charset.StandardCharsets;
@@ -74,8 +77,17 @@ public class MainActivity extends Activity {
     private View customView;
     private WebChromeClient.CustomViewCallback customViewCallback;
 
-    // URL template (v5.2): edge-swipe gestures + secret browse history.
-    private boolean urlKind;
+    // v5.3: features builder ke likhe assets/config.json se aate hain.
+    // File na mile/kharab ho to sab defaults (purana Default template).
+    private String cfgType = "html";
+    private String cfgUrl = "";
+    private boolean featFullscreen;
+    private boolean featAdBlock;
+    private boolean featHistory;
+    private boolean featGestures;
+    private boolean featDarkPage;
+    private boolean featCustomCode;
+    private String injectJsCache;
     private View historyOverlay;
     private JSONArray historyShown;
     private static final String HISTORY_PREFS = "sp_url_history";
@@ -85,7 +97,7 @@ public class MainActivity extends Activity {
     @Override
     protected void onCreate(Bundle savedInstanceState) {
         super.onCreate(savedInstanceState);
-        urlKind = "url".equals(BuildConfig.TEMPLATE_KIND);
+        loadConfig();
 
         rootLayout = new FrameLayout(this);
         webView = new WebView(this);
@@ -127,16 +139,36 @@ public class MainActivity extends Activity {
             }
 
             @Override
+            public WebResourceResponse shouldInterceptRequest(WebView view, WebResourceRequest request) {
+                // Ad Block (v5.3): ad/tracker host ki sub-resource
+                // requests khaali jawab se rok do. Page ka apna
+                // main-frame document KABHI nahi rokte.
+                if (featAdBlock && request != null && !request.isForMainFrame()) {
+                    try {
+                        Uri u = request.getUrl();
+                        if (u != null && isAdHost(u.getHost())) {
+                            return new WebResourceResponse("text/plain", "UTF-8",
+                                    new ByteArrayInputStream(new byte[0]));
+                        }
+                    } catch (Exception ignored) { }
+                }
+                return null;
+            }
+
+            @Override
             public void doUpdateVisitedHistory(WebView view, String url, boolean isReload) {
                 super.doUpdateVisitedHistory(view, url, isReload);
-                if (urlKind && !isReload) recordHistory(url, view.getTitle());
+                if (featHistory && !isReload) recordHistory(url, view.getTitle());
             }
 
             @Override
             public void onPageFinished(WebView view, String url) {
                 super.onPageFinished(view, url);
                 // Title ab pakka mil gaya hoga — history entry tazaa karo.
-                if (urlKind) recordHistory(url, view.getTitle());
+                if (featHistory) recordHistory(url, view.getTitle());
+                // v5.3: page dark mode + custom JS/CSS injection.
+                if (featDarkPage) injectDarkMode(view);
+                if (featCustomCode) injectCustomCode(view);
                 // Ask for the notifications permission once, like browsers do.
                 if (!notifyAsked && Build.VERSION.SDK_INT >= 33
                         && checkSelfPermission(Manifest.permission.POST_NOTIFICATIONS)
@@ -275,30 +307,24 @@ public class MainActivity extends Activity {
         NotifyHelper.ensureChannel(this);
         webView.addJavascriptInterface(new SpWebOsBridge(), "SpWebOS");
 
-        // ---- Template kind (v5.1): har flavour apna TEMPLATE_KIND lata hai.
-        // "default" / "js3d" -> assets/index.html (js3d ke saath bandle
-        // three.min.js bhi assets me hota hai). "url" -> assets/url.txt me
-        // likhi website. "full" -> index.html + immersive fullscreen +
-        // screen hamesha on (kiosk style). Bridge aur file chooser sab
-        // flavours me bilkul ek jaise rehte hain.
-        String kind = BuildConfig.TEMPLATE_KIND;
-        if ("full".equals(kind)) {
+        // ---- v5.3: ek hi template; vyavhaar assets/config.json ke
+        // flags se tay hota hai (builder har build me config likhta hai).
+        // config na mile to sab band = purana Default template jaisa.
+        if (featFullscreen) {
             getWindow().addFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON);
             applyImmersive();
         }
-        if ("url".equals(kind)) {
-            webView.loadUrl(readUrlFromAssets());
+        if ("url".equals(cfgType)) {
+            webView.loadUrl(cfgUrl.isEmpty() ? "https://example.com" : cfgUrl);
         } else {
             webView.loadUrl("file:///android_asset/index.html");
         }
-        if (urlKind) {
-            installEdgeGestures();
-            addSecretDot();
-        }
+        if (featGestures) installEdgeGestures();
+        if (featHistory) addSecretDot();
     }
 
 
-    // ---------------- URL template (v5.2): gestures + secret history
+    // ---------------- Features: gestures + secret history (v5.2, v5.3 me flag-gated)
 
     private int dp(int v) {
         return (int) (v * getResources().getDisplayMetrics().density + 0.5f);
@@ -585,19 +611,99 @@ public class MainActivity extends Activity {
         }
     }
 
-    /** URL template: builder assets/url.txt me website ka pata likhta hai.
-     *  File na mile ya khaali ho to example.com khulta hai. */
-    private String readUrlFromAssets() {
-        try (InputStream in = getAssets().open("url.txt")) {
+    /** Asset file ko poora text padhta hai; na mile to null. */
+    private String readAssetText(String name) {
+        try (InputStream in = getAssets().open(name)) {
             ByteArrayOutputStream baos = new ByteArrayOutputStream();
-            byte[] buf = new byte[1024];
+            byte[] buf = new byte[4096];
             int n;
             while ((n = in.read(buf)) != -1) baos.write(buf, 0, n);
-            String u = new String(baos.toByteArray(), StandardCharsets.UTF_8).trim();
-            if (!u.isEmpty()) return u;
-        } catch (Exception ignored) {
+            return new String(baos.toByteArray(), StandardCharsets.UTF_8);
+        } catch (Exception e) {
+            return null;
         }
-        return "https://example.com";
+    }
+
+    /** Builder ke likhe assets/config.json ko padhta hai (v5.3).
+     *  File na mile ya kharab ho to defaults rehte hain: type html,
+     *  saare features band — bilkul purane Default template jaisa. */
+    private void loadConfig() {
+        try {
+            String text = readAssetText("config.json");
+            if (text == null) return;
+            JSONObject cfg = new JSONObject(text);
+            cfgType = cfg.optString("type", "html");
+            cfgUrl = cfg.optString("url", "").trim();
+            featFullscreen = cfg.optBoolean("fullscreen", false);
+            featAdBlock = cfg.optBoolean("adBlock", false);
+            featHistory = cfg.optBoolean("history", false);
+            featGestures = cfg.optBoolean("gestures", false);
+            featDarkPage = cfg.optBoolean("darkPage", false);
+            featCustomCode = cfg.optBoolean("customCode", false);
+        } catch (Exception ignored) { }
+    }
+
+    // ---------------- Feature: ad block (v5.3)
+
+    /** Mashhoor ad/tracker networks ke hosts. Host barabar ho YA
+     *  inka subdomain ho, tabhi block — page ka apna main-frame
+     *  document waise bhi kabhi nahi rukta. */
+    private static final String[] AD_HOSTS = {
+            "doubleclick.net", "googlesyndication.com", "googleadservices.com",
+            "google-analytics.com", "googletagmanager.com", "googletagservices.com",
+            "ads.yahoo.com", "adnxs.com", "taboola.com", "outbrain.com",
+            "popads.net", "popcash.net", "adcash.com", "mgid.com", "revcontent.com",
+            "zedo.com", "adsterra.com", "propellerads.com", "exoclick.com",
+            "juicyads.com", "trafficjunky.com", "adskeeper.co.uk", "ad-maven.com",
+            "hilltopads.com", "clickadu.com", "adexnetworks.com",
+            "smartadserver.com", "criteo.com", "rubiconproject.com", "pubmatic.com",
+            "openx.net", "casalemedia.com", "advertising.com", "adsrvr.org",
+            "moatads.com", "scorecardresearch.com", "quantserve.com",
+            "inmobi.com", "vungle.com", "applovin.com", "unityads.unity3d.com",
+            "adcolony.com", "chartboost.com", "mopub.com", "smaato.net",
+            "bidvertiser.com", "evadav.com", "pushground.com", "notix.io",
+            "push.house", "exdynsrv.com", "tsyndicate.com", "a-ads.com"
+    };
+
+    private static boolean isAdHost(String host) {
+        if (host == null || host.isEmpty()) return false;
+        String h = host.toLowerCase(Locale.ROOT);
+        for (String d : AD_HOSTS) {
+            if (h.equals(d) || h.endsWith("." + d)) return true;
+        }
+        return false;
+    }
+
+    // ---------------- Feature: page dark mode + custom code (v5.3)
+
+    /** Page Dark Mode: poore page ko invert karke dark bana deta hai;
+     *  tasveerein/video/canvas dobara invert hokar seedhe rehte hain.
+     *  Har page par sirf EK baar (window flag guard). */
+    private void injectDarkMode(WebView view) {
+        try {
+            view.evaluateJavascript(
+                    "(function(){try{"
+                    + "if(window.__spDarkApplied)return;"
+                    + "window.__spDarkApplied=1;"
+                    + "var st=document.createElement('style');"
+                    + "st.textContent='img,video,canvas,[style*=\"background-image\"]"
+                    + "{filter:invert(1) hue-rotate(180deg) !important;}';"
+                    + "(document.head||document.documentElement).appendChild(st);"
+                    + "document.documentElement.style.filter='invert(1) hue-rotate(180deg)';"
+                    + "}catch(e){}})();", null);
+        } catch (Exception ignored) { }
+    }
+
+    /** Custom JS/CSS: builder ke rakhe assets/inject.js (user ka JS +
+     *  CSS wrapper) ko har page load ke baad chalata hai. */
+    private void injectCustomCode(WebView view) {
+        try {
+            if (injectJsCache == null) {
+                String t = readAssetText("inject.js");
+                injectJsCache = t == null ? "" : t;
+            }
+            if (!injectJsCache.isEmpty()) view.evaluateJavascript(injectJsCache, null);
+        } catch (Exception ignored) { }
     }
 
     /** Fullscreen template: system bars chhupakar immersive mode. */
@@ -616,7 +722,7 @@ public class MainActivity extends Activity {
         super.onWindowFocusChanged(hasFocus);
         // Dialog / permission prompt ke baad bars wapas aa jate hain —
         // fullscreen template me focus milte hi immersive dobara lagao.
-        if (hasFocus && "full".equals(BuildConfig.TEMPLATE_KIND)) applyImmersive();
+        if (hasFocus && featFullscreen) applyImmersive();
     }
 
     /**
@@ -716,7 +822,7 @@ public class MainActivity extends Activity {
         customView = null;
         webView.setVisibility(View.VISIBLE);
         // Fullscreen template me screen-on hamesha rehna chahiye.
-        if (!"full".equals(BuildConfig.TEMPLATE_KIND)) {
+        if (!featFullscreen) {
             getWindow().clearFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON);
         }
         if (customViewCallback != null) {
