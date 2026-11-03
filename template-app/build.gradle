@@ -43,58 +43,22 @@ android {
             buildConfigField 'String', 'TEMPLATE_KIND', '"full"'
         }
     }
-
-    sourceSets {
-        // js3d flavour: bandle hua three.min.js (neeche fetchThreeJs task
-        // download karke generated folder me rakhta hai) + demo index.html.
-        js3d {
-            assets.srcDirs = ['src/js3d/assets', 'build/generated/threejs-assets']
-        }
-    }
-}
-
-// three.min.js (three@0.160.0, pinned) build ke samay CDN se aata hai —
-// repo me 660 KB ki file daalne ki zaroorat nahi. Do mirrors try hote hain.
-def fetchThreeJs = tasks.register('fetchThreeJs') {
-    def outDir = file('build/generated/threejs-assets')
-    def outFile = new File(outDir, 'three.min.js')
-    outputs.file(outFile)
-    doLast {
-        if (!outFile.exists() || outFile.length() < 100000) {
-            outDir.mkdirs()
-            def urls = [
-                'https://cdn.jsdelivr.net/npm/three@0.160.0/build/three.min.js',
-                'https://cdnjs.cloudflare.com/ajax/libs/three.js/0.160.0/three.min.js'
-            ]
-            Exception last = null
-            for (u in urls) {
-                try {
-                    new URL(u).withInputStream { inp ->
-                        outFile.withOutputStream { out -> out << inp }
-                    }
-                    last = null
-                    break
-                } catch (Exception e) {
-                    last = e
-                }
-            }
-            if (last != null) throw last
-        }
-    }
 }
 
 // CI workflow (.github/workflows/build.yml, badla nahi ja sakta) template
 // build ke baad purani jagah se APK uthata hai:
 //   cp template-app/build/outputs/apk/debug/template-app-debug.apk ...
-// Flavours ke saath woh path apne aap nahi banta, isliye default flavour ke
-// APK ko wahan stage kar dete hain (assembleDebug ke finalizer ke roop me).
-def stageLegacyTemplateApk = tasks.register('stageLegacyTemplateApk', Copy) {
-    dependsOn 'assembleDefaultDebug'
-    from('build/outputs/apk/default/debug/template-app-default-debug.apk')
-    into('build/outputs/apk/debug')
-    rename { 'template-app-debug.apk' }
+// Flavours ke saath woh path apne aap nahi banta, isliye assembleDebug ke
+// ant me default flavour ke APK ko wahan copy kar dete hain.
+tasks.named('assembleDebug') {
+    doLast {
+        copy {
+            from 'build/outputs/apk/default/debug/template-app-default-debug.apk'
+            into 'build/outputs/apk/debug'
+            rename { 'template-app-debug.apk' }
+        }
+    }
 }
-tasks.named('assembleDebug') { finalizedBy(stageLegacyTemplateApk) }
 
 // Launcher icons ship in this repo as base64 text files (icon-b64/) because
 // the repo is maintained through an API that cannot carry binary files.
@@ -120,8 +84,3 @@ def decodeLauncherIcons = tasks.register('decodeLauncherIcons') {
     }
 }
 tasks.named('preBuild') { dependsOn(decodeLauncherIcons) }
-// three.min.js sirf js3d flavour ko chahiye — download sirf usi variant ke
-// assets merge se pehle chalao, taaki CDN ki gadbad baaki flavours ke
-// build ko na roke.
-tasks.matching { it.name.startsWith('mergeJs3d') && it.name.endsWith('Assets') }
-        .configureEach { dependsOn(fetchThreeJs) }
