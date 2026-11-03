@@ -19,3 +19,27 @@ dependencies {
     // Google's APK signing library (same one apksigner uses) — runs on-device.
     implementation 'com.android.tools.build:apksig:8.2.2'
 }
+
+// Launcher icons ship in this repo as base64 text files (icon-b64/) because
+// the repo is maintained through an API that cannot carry binary files.
+// Decode them into real PNG mipmaps under src/main/res before resources are
+// processed, so the builder app itself gets a proper launcher icon.
+// File names: ic_launcher-<density>.b64, ic_launcher_round-<density>.b64
+def decodeLauncherIcons = tasks.register('decodeLauncherIcons') {
+    def b64Dir = file('icon-b64')
+    def resDir = file('src/main/res')
+    inputs.dir(b64Dir)
+    doLast {
+        b64Dir.listFiles()?.findAll { it.name.endsWith('.b64') }?.each { f ->
+            def base = f.name - '.b64'
+            def dash = base.lastIndexOf('-')
+            def iconName = base.substring(0, dash)
+            def density = base.substring(dash + 1)
+            def outDir = new File(resDir, "mipmap-${density}")
+            outDir.mkdirs()
+            new File(outDir, "${iconName}.png").bytes =
+                    java.util.Base64.mimeDecoder.decode(f.getText('UTF-8').trim())
+        }
+    }
+}
+tasks.named('preBuild') { dependsOn(decodeLauncherIcons) }
